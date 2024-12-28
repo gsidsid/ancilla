@@ -1,5 +1,5 @@
 """
-reetale
+barclay's volscore thing
 """
 
 import pandas as pd
@@ -105,7 +105,7 @@ class VolatilityArbitrageBacktester:
             'min_holding_days': 3,           # Minimum holding period
             'max_holding_days': 21,          # Maximum holding period
             'delta_limit': 0.15,             # Maximum portfolio delta
-            'rebalance_threshold': 0.05      # Rebalance threshold
+            'rebalance_threshold': 0.15      # Rebalance threshold
         }
 
     def fetch_data(self, start_date, end_date):
@@ -150,7 +150,6 @@ class VolatilityArbitrageBacktester:
         except Exception as e:
             print(f"Error calculating volscore: {str(e)}")
             return None
-
 
     def calculate_pnl(self, position, entry_date, current_date, ticker):
         try:
@@ -272,13 +271,125 @@ class VolatilityArbitrageBacktester:
         except Exception as e:
             print(f"Error in delta rebalancing: {str(e)}")
 
+    def adjust_risk_limits_growth(self, portfolio_value, initial_capital):
+        """
+        Adjusts risk limits based on portfolio growth to increase aggressiveness.
+
+        Parameters:
+        - portfolio_value (float): Current value of the portfolio.
+        - initial_capital (float): Starting capital of the portfolio.
+        """
+        growth_factor = portfolio_value / initial_capital
+
+        # Define growth milestones (e.g., every 20% growth)
+        milestone = 0.20  # 20%
+
+        # Calculate the number of milestones achieved
+        milestones_achieved = int(growth_factor // milestone)
+
+        # Increase max_position_size by 10% for every milestone, cap at 100%
+        additional_size = 0.10 * milestones_achieved
+        self.risk_limits['max_position_size'] = min(0.25 + additional_size, 1.00)
+
+        # Increase max_portfolio_vol by 5% for every milestone, cap at 0.60 (60%)
+        additional_vol = 0.05 * milestones_achieved
+        self.risk_limits['max_portfolio_vol'] = min(0.30 + additional_vol, 0.60)
+
+        # Adjust 'delta_limit' by 5% per milestone, cap at 0.60
+        self.risk_limits['delta_limit'] = min(0.30 + 0.05 * milestones_achieved, 0.60)
+
+    def adjust_risk_limits_volatility(self, current_vol):
+        """
+        Adjusts risk limits based on current market volatility to enhance aggressiveness.
+
+        Parameters:
+        - current_vol (float): Current market volatility indicator (e.g., portfolio volatility).
+        """
+        # Define volatility thresholds
+        high_vol_threshold = 0.30  # 30%
+        low_vol_threshold = 0.15   # 15%
+
+        if current_vol > high_vol_threshold:
+            # In high volatility, slightly reduce position sizes to manage risk without being overly restrictive
+            self.risk_limits['max_position_size'] = max(self.risk_limits['max_position_size'] * 0.95, 0.15)  # Reduce by 5%, floor at 15%
+
+            # Minimal adjustment to stop loss to avoid premature exits
+            self.risk_limits['position_stop_loss'] = min(self.risk_limits['position_stop_loss'] - 0.005, -0.20)  # Tighten by 0.5%
+
+            # Slight increase in delta limit to maintain aggressiveness
+            self.risk_limits['delta_limit'] = min(self.risk_limits['delta_limit'] + 0.02, 0.70)  # Increase by 2%
+
+        elif current_vol < low_vol_threshold:
+            # In low volatility, increase position sizes to capitalize on stable conditions
+            self.risk_limits['max_position_size'] = min(self.risk_limits['max_position_size'] * 1.25, 2.50)  # Increase by 25%, cap at 250%
+
+            # Relax stop loss to allow positions to breathe
+            self.risk_limits['position_stop_loss'] = max(self.risk_limits['position_stop_loss'] + 0.03, -0.03)  # Relax by 3%
+
+            # Increase delta limit to enhance directional bets
+            self.risk_limits['delta_limit'] = min(self.risk_limits['delta_limit'] + 0.05, 0.80)  # Increase by 5%
+
+
+    def adjust_risk_limits_performance(self, portfolio_history):
+        """
+        Adjusts risk limits based on portfolio performance to scale aggressiveness.
+
+        Parameters:
+        - portfolio_history (list of floats): Historical portfolio values.
+        """
+        cumulative_return = (portfolio_history[-1] / portfolio_history[0]) - 1
+
+        # Define performance thresholds
+        aggressive_threshold = 1.00    # 100% return
+        drawdown_threshold = -0.20     # 20% drawdown
+
+        if cumulative_return > aggressive_threshold:
+            # Upon reaching aggressive return milestones, further increase risk limits
+            self.risk_limits['position_stop_loss'] = max(self.risk_limits['position_stop_loss'] - 0.03, -0.30)
+            self.risk_limits['max_position_size'] = min(self.risk_limits['max_position_size'] * 1.10, 1.50)
+            self.risk_limits['max_portfolio_vol'] = min(self.risk_limits['max_portfolio_vol'] * 1.10, 0.80)
+            self.risk_limits['delta_limit'] = min(self.risk_limits['delta_limit'] * 1.10, 0.80)
+
+        elif cumulative_return < drawdown_threshold:
+            # After a significant drawdown, tighten risk limits to protect capital
+            self.risk_limits['position_stop_loss'] = max(self.risk_limits['position_stop_loss'] + 0.05, -0.15)
+            self.risk_limits['max_position_size'] = max(self.risk_limits['max_position_size'] * 0.70, 0.05)
+            self.risk_limits['max_portfolio_vol'] = max(self.risk_limits['max_portfolio_vol'] * 0.80, 0.20)
+            self.risk_limits['delta_limit'] = max(self.risk_limits['delta_limit'] * 0.80, 0.10)
+
+        # Else, maintain current risk limits (no action needed)
+
+    def adjust_risk_limits_combined(self, portfolio_value, initial_capital, current_vol, portfolio_history):
+        # Adjust based on growth
+        self.adjust_risk_limits_growth(portfolio_value, initial_capital)
+
+        # Adjust based on volatility
+        self.adjust_risk_limits_volatility(current_vol)
+
+        # Adjust based on performance
+        self.adjust_risk_limits_performance(portfolio_history)
+
+    def calculate_portfolio_volatility(self, date):
+        """
+        Calculates portfolio volatility based on current positions and their vegas.
+        """
+        total_vega = 0.0
+        for ticker, positions in self.positions.items():
+            spot = float(self.data[ticker]['Close'].loc[date])
+            for pos in positions:
+                greeks = pos.calculate_greeks(spot)
+                total_vega += greeks['vega']
+
+        # Assume portfolio volatility is proportional to total vega
+        # This is a simplification
+        portfolio_vol = total_vega * 0.01  # Scaling factor
+        return portfolio_vol
+
     def backtest_strategy(self, initial_capital=1000000):
         portfolio_value = float(initial_capital)
         portfolio_history = [portfolio_value]
         dates = self.data[self.tickers[0]].index
         trades_taken = 0
-
-        print("\nStarting backtest...")
 
         # Align all dataframes to have the same dates
         common_dates = self.data[self.tickers[0]].index
@@ -289,10 +400,13 @@ class VolatilityArbitrageBacktester:
         for i, date in enumerate(dates[:-1]):
             daily_pnl = 0.0
 
-            if i % 20 == 0:
-                print(f"\nDate: {date.date()}")
-                print(f"Portfolio value: ${portfolio_value:,.2f}")
-                print(f"Active positions: {list(self.positions.keys())}")
+            # Calculate current portfolio volatility
+            current_vol = self.calculate_portfolio_volatility(date)
+
+            # Adjust risk limits based on multiple factors
+            self.adjust_risk_limits_growth(portfolio_value, initial_capital)
+            self.adjust_risk_limits_volatility(current_vol)
+            self.adjust_risk_limits_performance(portfolio_history)
 
             # Process existing positions
             for ticker in list(self.positions.keys()):
@@ -302,18 +416,17 @@ class VolatilityArbitrageBacktester:
                         pnl = self.calculate_pnl(pos, pos.entry_date, date, ticker)
                         pnl_pct = pnl / portfolio_value
                         if pnl_pct <= self.risk_limits['position_stop_loss']:
-                            print(f"Stop loss triggered for {ticker}: {pnl_pct:.2%}")
+                            # Stop loss triggered
                             daily_pnl += pnl
                             positions.remove(pos)
                         elif pnl_pct >= self.risk_limits['min_profit_taking']:
-                            print(f"Profit target hit for {ticker}: {pnl_pct:.2%}")
+                            # Profit target hit
                             daily_pnl += pnl
                             positions.remove(pos)
 
                         # Exit positions based on holding period
                         days_held = (date - pos.entry_date).days
                         if days_held > self.risk_limits['max_holding_days']:
-                            print(f"Exiting position in {ticker} after holding for {days_held} days.")
                             pnl = self.calculate_pnl(pos, pos.entry_date, date, ticker)
                             daily_pnl += pnl
                             positions.remove(pos)
@@ -322,7 +435,7 @@ class VolatilityArbitrageBacktester:
                         del self.positions[ticker]
 
                 except Exception as e:
-                    print(f"Error processing position {ticker}: {str(e)}")
+                    # Handle position processing errors
                     continue
 
             # Rebalance delta
@@ -347,14 +460,11 @@ class VolatilityArbitrageBacktester:
                         # Update current volscore
                         self.prev_volscore[ticker] = volscore
 
-                        # Check persistence: current and previous volscore exceed thresholds
-                        if volscore is None or spot <= 10 or prev_volscore is None:
-                            continue
-
-                        if (volscore > 0.25 and prev_volscore > 0.25) or (volscore < -0.25 and prev_volscore < -0.25):
+                        # Trade entry condition: relaxed thresholds
+                        if (volscore > 0.20 and prev_volscore > 0.20) or (volscore < -0.20 and prev_volscore < -0.20):
                             position_size = self.calculate_position_size(portfolio_value, spot, vol, -portfolio_delta)
 
-                            if volscore > 0.25:  # Short vol
+                            if volscore > 0.20:  # Short vol
                                 call = SimulatedOption(spot, date + pd.Timedelta(days=30),
                                                     True, -position_size, spot, vol)
                                 put = SimulatedOption(spot, date + pd.Timedelta(days=30),
@@ -364,12 +474,8 @@ class VolatilityArbitrageBacktester:
                                     call.entry_date = put.entry_date = date
                                     self.positions[ticker] = [call, put]
                                     trades_taken += 1
-                                    print(f"\nOpened straddle in {ticker}")
-                                    print(f"Entry prices - Call: ${call.entry_price:.2f}, Put: ${put.entry_price:.2f}")
-                                    print(f"Size: {position_size} contracts")
-                                    print(f"Delta: {call.calculate_greeks(spot)['delta'] + put.calculate_greeks(spot)['delta']:.3f}")
 
-                            elif volscore < -0.25:  # Long vol
+                            elif volscore < -0.20:  # Long vol
                                 long_call = SimulatedOption(spot*0.95, date + pd.Timedelta(days=30),
                                                           True, position_size, spot, vol)
                                 short_call = SimulatedOption(spot*1.05, date + pd.Timedelta(days=30),
@@ -379,37 +485,21 @@ class VolatilityArbitrageBacktester:
                                     long_call.entry_date = short_call.entry_date = date
                                     self.positions[ticker] = [long_call, short_call]
                                     trades_taken += 1
-                                    print(f"\nOpened call spread in {ticker}")
-                                    print(f"Entry prices - Long: ${long_call.entry_price:.2f}, Short: ${short_call.entry_price:.2f}")
-                                    print(f"Size: {position_size} contracts")
-                                    print(f"Delta: {long_call.calculate_greeks(spot)['delta'] + short_call.calculate_greeks(spot)['delta']:.3f}")
 
                     except Exception as e:
-                        print(f"Error processing {ticker}: {str(e)}")
+                        # Handle trade entry errors
                         continue
 
             # Update portfolio value
             portfolio_value = max(portfolio_value + daily_pnl, 0)
             portfolio_history.append(portfolio_value)
 
-            # Print daily summary
-            if abs(daily_pnl) > 0:
-                print(f"\nDaily P&L: ${daily_pnl:,.2f}")
-                print(f"Portfolio Value: ${portfolio_value:,.2f}")
+            # Optional: Minimal daily summaries can be printed if needed
+            # Example:
+            # if i % 100 == 0:
+            #     print(f"Date: {date}, Portfolio Value: {portfolio_value}")
 
-                # Print risk metrics
-                portfolio_delta = self.calculate_portfolio_delta(date)
-                print(f"Portfolio Delta: {portfolio_delta:.3f}")
-
-                # Check any positions near expiry
-                """
-                for ticker, positions in self.positions.items():
-                    for pos in positions:
-                        days_to_expiry = (pos.expiry - date).days
-                        if days_to_expiry <= 5:
-                            print(f"Warning: {ticker} position near expiry ({days_to_expiry} days)")
-                """
-
+        # Backtest completion summary
         print(f"\nBacktest complete.")
         print(f"Total trades: {trades_taken}")
 
@@ -423,19 +513,21 @@ class VolatilityArbitrageBacktester:
 
         print("\nPerformance Summary:")
         print(f"Total Return: {cumulative_return:.2%}")
+        # Year-on-year
+        print(f"Annual Return: {(portfolio_series.iloc[-1] / portfolio_series.iloc[0]) ** (252 / len(dates)) - 1:.2%}")
         print(f"Annual Volatility: {annual_volatility:.2%}")
         print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
         print(f"Max Drawdown: {max_drawdown:.2%}")
 
         return portfolio_series
 
-# Example usage
+
 if __name__ == "__main__":
     tickers = ['MSFT', 'AAPL', 'TSLA', 'AMZN', 'GOOGL']
     sector_etf = 'XLK'
 
     backtester = VolatilityArbitrageBacktester(tickers, sector_etf)
-    backtester.fetch_data('2021-01-01', '2024-12-03')
+    backtester.fetch_data('2018-01-01', '2024-12-03')
 
     portfolio_values = backtester.backtest_strategy(initial_capital=10000)
     returns = portfolio_values.pct_change().dropna()
