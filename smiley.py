@@ -209,31 +209,9 @@ class ImpliedVolatilityAnalysis:
 
         return df
 
-    def store_surface(self, df: pd.DataFrame) -> None:
-        """
-        Store the volatility surface data.
-        """
-        if df.empty:
-            return
-
-        now = datetime.now(self.et_tz)
-        df_dict = df.copy()
-        if 'timestamp' in df_dict.columns:
-            df_dict['timestamp'] = df_dict['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        data = {
-            'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
-            'stock_price': float(df['stock_price'].iloc[0]),
-            'surface_data': df_dict.to_dict(orient='records')
-        }
-
-        filename = self.data_dir / f"{self.ticker}_{now.strftime('%Y%m%d_%H%M')}.json"
-        with open(filename, 'w') as f:
-            json.dump(data, f)
-
     def load_historical_data(self, days_back: int = 5) -> Optional[pd.DataFrame]:
         """
-        Load historical volatility surface data.
+        Load historical volatility surface data with consistent timezone handling.
         """
         start_date = datetime.now(self.et_tz) - timedelta(days=days_back)
         all_data = []
@@ -242,16 +220,64 @@ class ImpliedVolatilityAnalysis:
             try:
                 with open(file, 'r') as f:
                     data = json.load(f)
+
                 file_date = datetime.strptime(data['timestamp'], '%Y-%m-%d %H:%M:%S')
                 file_date = self.et_tz.localize(file_date)
+
                 if file_date >= start_date:
                     df = pd.DataFrame(data['surface_data'])
-                    df['timestamp'] = file_date
+
+                    # Handle timestamp consistently
+                    if 'timestamp' in df.columns:
+                        # Convert to UTC for consistent handling
+                        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(self.et_tz).dt.tz_convert('UTC')
+                    else:
+                        df['timestamp'] = file_date.astimezone('UTC')
+
                     all_data.append(df)
-            except Exception:
+
+            except Exception as e:
+                print(f"Error processing file {file.name}: {str(e)}")
                 continue
 
-        return pd.concat(all_data, ignore_index=True) if all_data else None
+        if not all_data:
+            return None
+
+        final_df = pd.concat(all_data, ignore_index=True)
+
+        # Convert timestamps back to Eastern Time for display
+        final_df['timestamp'] = final_df['timestamp'].dt.tz_convert(self.et_tz)
+
+        return final_df
+
+    def store_surface(self, df: pd.DataFrame) -> None:
+        """
+        Store the volatility surface data with explicit timestamp handling.
+        """
+        if df.empty:
+            return
+
+        now = datetime.now(self.et_tz)
+        df_dict = df.copy()
+
+        # Ensure consistent timestamp format
+        if 'timestamp' in df_dict.columns:
+            df_dict['timestamp'] = pd.to_datetime(df_dict['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        data = {
+            'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'stock_price': float(df['stock_price'].iloc[0]),
+            'surface_data': df_dict.to_dict(orient='records')
+        }
+
+        filename = self.data_dir / f"{self.ticker}_{now.strftime('%Y%m%d_%H%M')}.json"
+        print(f"\nStoring surface data:")
+        print(f"File: {filename}")
+        print(f"Timestamp: {data['timestamp']}")
+
+        with open(filename, 'w') as f:
+            json.dump(data, f)
+
 
     def prepare_visualization_data(self, df: pd.DataFrame,
                                    params: Optional[Dict] = None) -> pd.DataFrame:
@@ -372,110 +398,369 @@ class ImpliedVolatilityAnalysis:
                                 grid_points: Tuple[np.ndarray, np.ndarray],
                                 smooth_params: Optional[Dict] = None):
         """
-        Produce a smoother implied-vol surface via SVI on each day_bucket.
-        Falls back to simpler interpolation if SVI fails or not enough data.
+        Adaptive SVI surface interpolation with proper timezone handling.
+        """
+        if smooth_params is None:
+            smooth_params = {
+                'z_smooth': 0.5,
+                'time_bucket_size': 5,
+                'force_mode': None
+            }
+
+        df = df.copy()
+        moneyness_mesh, days_mesh = grid_points
+
+        # Convert timestamps to UTC for time span calculation
+        timestamps = pd.to_datetime(df['timestamp']).dt.tz_convert('UTC')
+        time_span = (timestamps.max() - timestamps.min()).total_seconds() / 3600
+
+        # Use historical mode if we have data spanning more than 10 minutes
+        use_historical = (
+            time_span > (1/6) and  # 10 minutes
+            smooth_params.get('force_mode') != 'snapshot'
+        ) or smooth_params.get('force_mode') == 'historical'
+
+        if use_historical:
+            return self._interpolate_historical_svi(df, grid_points, smooth_params)
+        else:
+            return self._interpolate_snapshot_svi(df, grid_points, smooth_params)
+
+    def _interpolate_historical_svi(self,
+                                   df: pd.DataFrame,
+                                   grid_points: Tuple[np.ndarray, np.ndarray],
+                                   smooth_params: Dict):
+        """
+        SVI interpolation optimized for historical data with temporal smoothing.
         """
         df = df.copy()
-        df['day_bucket'] = df['days_float'].round()
+        bucket_size = smooth_params.get('time_bucket_size', 5)
 
-        if smooth_params is None:
-            smooth_params = {'z_smooth': 0.5}
+        # Use continuous time buckets with overlap for smoother transitions
+        df['day_bucket'] = (df['days_float'] / bucket_size).round() * bucket_size
 
         moneyness_mesh, days_mesh = grid_points
         output_surface = np.full_like(moneyness_mesh, np.nan, dtype=float)
+        weight_sum = np.zeros_like(output_surface)
 
-        # Group by day_bucket
-        for bucket_val, bucket_df in df.groupby('day_bucket'):
-            row_mask = (np.round(days_mesh) == bucket_val)
+        # Get unique time buckets with overlap
+        unique_days = np.sort(df['days_float'].unique())
+        time_buckets = []
+
+        # Create overlapping time windows
+        for day in unique_days:
+            bucket_min = max(0, day - bucket_size/2)
+            bucket_max = day + bucket_size/2
+            time_buckets.append((day, bucket_min, bucket_max))
+
+        # Process each time bucket
+        for center_day, bucket_min, bucket_max in time_buckets:
+            bucket_df = df[
+                (df['days_float'] >= bucket_min) &
+                (df['days_float'] <= bucket_max)
+            ].copy()
+
+            if bucket_df.empty:
+                continue
+
+            row_mask = (days_mesh >= bucket_min) & (days_mesh <= bucket_max)
             if not row_mask.any():
                 continue
 
-            T = bucket_df['days_float'].mean() / 365.25
+            T = center_day / 365.25
             if T <= 0:
                 continue
 
             k_data = np.log(bucket_df['moneyness'].values)
             iv_data = bucket_df['impl_vol'].values
 
-            # Attempt SVI if at least 5 distinct log-moneyness points
             if len(np.unique(k_data)) >= 5:
                 try:
-                    a, b, rho, m, sigma = self._calibrate_svi(k_data, iv_data, T)
-                    k_grid = np.log(moneyness_mesh[row_mask])
-                    w_grid = self._svi_total_variance(k_grid, a, b, rho, m, sigma)
-                    iv_grid = np.sqrt(np.maximum(w_grid / T, 1e-12))
-                    output_surface[row_mask] = iv_grid
-                    continue
-                except:
-                    pass  # fallback to simpler interpolation
+                    # Multiple initial guesses
+                    atm_idx = np.abs(k_data).argmin()
+                    atm_vol = iv_data[atm_idx]
+                    vol_range = np.max(iv_data) - np.min(iv_data)
 
-            # If SVI not possible, do local interpolation for that bucket
-            coords = np.column_stack((bucket_df['moneyness'], bucket_df['days_float']))
-            vals = bucket_df['impl_vol']
-            if len(np.unique(coords, axis=0)) < 3:
-                # fallback directly to nearest if we can't do linear
-                local_iv = self._safe_griddata(coords, vals,
-                                               (moneyness_mesh[row_mask], days_mesh[row_mask]),
-                                               method='nearest', fill_value=np.nan)
-            else:
-                local_iv = self._safe_griddata(coords, vals,
-                                               (moneyness_mesh[row_mask], days_mesh[row_mask]),
-                                               method='linear', fill_value=np.nan)
-            output_surface[row_mask] = local_iv
+                    initial_guesses = [
+                        (atm_vol**2 * T, vol_range * T, 0.0, 0.0, 0.1),  # symmetric
+                        (atm_vol**2 * T, vol_range * T, 0.5, 0.0, 0.1),  # right skew
+                        (atm_vol**2 * T, vol_range * T, -0.5, 0.0, 0.1)  # left skew
+                    ]
 
-        # Fill any leftover NaNs across the whole surface
-        nan_mask = np.isnan(output_surface)
-        if np.any(nan_mask):
-            valid_idx = ~nan_mask
-            if valid_idx.sum() > 4:
-                coords = np.column_stack((moneyness_mesh[valid_idx], days_mesh[valid_idx]))
-                vals = output_surface[valid_idx]
-                # Attempt cubic fallback
-                filled_vals = self._safe_griddata(coords, vals,
-                                                  (moneyness_mesh, days_mesh),
-                                                  method='cubic', fill_value=np.nan)
-                output_surface[nan_mask] = filled_vals[nan_mask]
+                    best_params = None
+                    best_error = float('inf')
 
-        # Final smoothing
-        output_surface = gaussian_filter(output_surface,
-                                         sigma=smooth_params.get('z_smooth', 0.5))
+                    for guess in initial_guesses:
+                        try:
+                            result = minimize(
+                                lambda x: self._svi_objective_historical(x, k_data, iv_data, T),
+                                guess,
+                                bounds=[
+                                    (1e-6, None),
+                                    (1e-6, None),
+                                    (-0.999, 0.999),
+                                    (None, None),
+                                    (1e-6, None)
+                                ],
+                                method='L-BFGS-B'
+                            )
 
-        if np.isnan(output_surface).all():
-            return None
+                            if result.success and result.fun < best_error:
+                                best_params = result.x
+                                best_error = result.fun
+                        except:
+                            continue
 
-        return output_surface
+                    if best_params is not None:
+                        a, b, rho, m, sigma = best_params
+                        k_grid = np.log(moneyness_mesh[row_mask])
+                        w_grid = self._svi_total_variance(k_grid, a, b, rho, m, sigma)
+                        iv_grid = np.sqrt(np.maximum(w_grid / T, 1e-12))
+
+                        # Apply weight based on distance from bucket center
+                        weights = np.exp(-0.5 * ((days_mesh[row_mask] - center_day) / (bucket_size/4))**2)
+                        output_surface[row_mask] += iv_grid * weights
+                        weight_sum[row_mask] += weights
+                        continue
+                except Exception as e:
+                    print(f"Historical SVI calibration failed for day {center_day}: {str(e)}")
+
+            # Fallback to interpolation if SVI fails
+            self._apply_fallback_interpolation(
+                bucket_df, row_mask, output_surface, weight_sum,
+                moneyness_mesh, days_mesh, center_day, bucket_size
+            )
+
+        # Normalize weights and apply final smoothing
+        mask = weight_sum > 0
+        output_surface[mask] /= weight_sum[mask]
+
+        if smooth_params.get('z_smooth', 0) > 0:
+            output_surface = gaussian_filter(
+                output_surface,
+                sigma=smooth_params.get('z_smooth', 0.5)
+            )
+
+        return output_surface if not np.isnan(output_surface).all() else None
+
+    def _interpolate_snapshot_svi(self,
+                                 df: pd.DataFrame,
+                                 grid_points: Tuple[np.ndarray, np.ndarray],
+                                 smooth_params: Dict):
+        """
+        SVI interpolation optimized for single-snapshot data.
+        """
+        df = df.copy()
+        moneyness_mesh, days_mesh = grid_points
+        output_surface = np.full_like(moneyness_mesh, np.nan, dtype=float)
+
+        # Process each expiry independently
+        unique_days = np.sort(df['days_float'].unique())
+
+        for day in unique_days:
+            day_slice = df[df['days_float'] == day].copy()
+            if day_slice.empty:
+                continue
+
+            # Find exact rows in mesh for this expiry
+            row_mask = np.abs(days_mesh - day) < (days_mesh[1,0] - days_mesh[0,0])
+            if not row_mask.any():
+                continue
+
+            T = day / 365.25
+            if T <= 0:
+                continue
+
+            k_data = np.log(day_slice['moneyness'].values)
+            iv_data = day_slice['impl_vol'].values
+
+            if len(np.unique(k_data)) >= 5:
+                try:
+                    # Single initial guess for snapshot mode
+                    atm_idx = np.abs(k_data).argmin()
+                    atm_vol = iv_data[atm_idx]
+                    vol_range = np.max(iv_data) - np.min(iv_data)
+
+                    initial_guess = [atm_vol**2 * T, vol_range * T, 0.0, 0.0, 0.1]
+
+                    result = minimize(
+                        lambda x: self._svi_objective_snapshot(x, k_data, iv_data, T),
+                        initial_guess,
+                        bounds=[
+                            (1e-6, None),
+                            (1e-6, None),
+                            (-0.999, 0.999),
+                            (None, None),
+                            (1e-6, None)
+                        ],
+                        method='L-BFGS-B'
+                    )
+
+                    if result.success:
+                        a, b, rho, m, sigma = result.x
+                        k_grid = np.log(moneyness_mesh[row_mask])
+                        w_grid = self._svi_total_variance(k_grid, a, b, rho, m, sigma)
+                        iv_grid = np.sqrt(np.maximum(w_grid / T, 1e-12))
+                        output_surface[row_mask] = iv_grid
+                        continue
+                except Exception as e:
+                    print(f"Snapshot SVI calibration failed for day {day}: {str(e)}")
+
+            # Fallback to simple interpolation
+            coords = np.column_stack((day_slice['moneyness'], day_slice['days_float']))
+            vals = day_slice['impl_vol']
+            output_surface[row_mask] = self._basic_interpolation(
+                coords, vals, moneyness_mesh[row_mask], days_mesh[row_mask]
+            )
+
+        # Fill gaps between expiries
+        valid_mask = ~np.isnan(output_surface)
+        if np.any(valid_mask):
+            points = np.column_stack((
+                moneyness_mesh[valid_mask].ravel(),
+                days_mesh[valid_mask].ravel()
+            ))
+            values = output_surface[valid_mask].ravel()
+
+            output_surface = griddata(
+                points,
+                values,
+                (moneyness_mesh, days_mesh),
+                method='linear',
+                fill_value=np.nan
+            )
+
+        return output_surface if not np.isnan(output_surface).all() else None
+
+    def _svi_objective_historical(self, params, k_data, iv_data, T):
+        """
+        SVI objective function with arbitrage penalties for historical data.
+        """
+        a, b, rho, m, sigma = params
+        w_data = (iv_data**2) * T
+        w_model = self._svi_total_variance(k_data, a, b, rho, m, sigma)
+
+        # Basic fit error
+        mse = np.mean((w_data - w_model)**2)
+
+        # Add penalties for arbitrage violations
+        penalty = 0
+
+        # Butterfly arbitrage condition
+        k_grid = np.linspace(min(k_data), max(k_data), 100)
+        w_grid = self._svi_total_variance(k_grid, a, b, rho, m, sigma)
+        d2w_dk2 = np.gradient(np.gradient(w_grid, k_grid), k_grid)
+        penalty += 1000 * np.sum(np.maximum(-d2w_dk2, 0)**2)
+
+        # Calendar spread condition
+        if T > 0:
+            dw_dt = w_grid / T
+            penalty += 1000 * np.sum(np.maximum(-dw_dt, 0)**2)
+
+        return mse + penalty
+
+    def _svi_objective_snapshot(self, params, k_data, iv_data, T):
+        """
+        Simplified SVI objective function for snapshot data.
+        """
+        a, b, rho, m, sigma = params
+        w_data = (iv_data**2) * T
+        w_model = self._svi_total_variance(k_data, a, b, rho, m, sigma)
+        return np.mean((w_data - w_model)**2)
+
+    def _basic_interpolation(self, coords, vals, x_grid, y_grid):
+        """
+        Helper for basic grid interpolation with fallbacks.
+        """
+        if len(np.unique(coords, axis=0)) >= 4:
+            try:
+                return griddata(
+                    coords, vals,
+                    (x_grid, y_grid),
+                    method='cubic',
+                    fill_value=np.nan
+                )
+            except:
+                pass
+
+        if len(np.unique(coords, axis=0)) >= 3:
+            try:
+                return griddata(
+                    coords, vals,
+                    (x_grid, y_grid),
+                    method='linear',
+                    fill_value=np.nan
+                )
+            except:
+                pass
+
+        return griddata(
+            coords, vals,
+            (x_grid, y_grid),
+            method='nearest',
+            fill_value=np.nan
+        )
+
+    def _apply_fallback_interpolation(self, bucket_df, row_mask, output_surface, weight_sum,
+                                     moneyness_mesh, days_mesh, center_day, bucket_size):
+        """
+        Helper for applying fallback interpolation with weights.
+        """
+        coords = np.column_stack((bucket_df['moneyness'], bucket_df['days_float']))
+        vals = bucket_df['impl_vol']
+
+        local_iv = self._basic_interpolation(
+            coords, vals,
+            moneyness_mesh[row_mask], days_mesh[row_mask]
+        )
+
+        weights = np.exp(-0.5 * ((days_mesh[row_mask] - center_day) / (bucket_size/4))**2)
+        output_surface[row_mask] += local_iv * weights
+        weight_sum[row_mask] += weights
 
     def visualize(self, days_back: int = 5, viz_params: Optional[Dict] = None) -> None:
         """
-        Create interactive visualization of volatility surface evolution.
+        Create interactive visualization of volatility surface evolution with proper time handling.
         """
-        # 1) Calculate/store latest data
+        if viz_params is None:
+            viz_params = {}
+
+        # Calculate/store latest data
         current_df = self.calculate_surface()
         if not current_df.empty:
             self.store_surface(current_df)
 
-        # 2) Load historical
+        # Load historical
         historical_df = self.load_historical_data(days_back)
         if historical_df is None or historical_df.empty:
-            print("No historical data available. Starting to track changes now.")
+            print("No historical data available.")
             return
 
-        # 3) Prep
+        # Calculate overall time span once
+        timestamps = pd.to_datetime(historical_df['timestamp']).dt.tz_convert('UTC')
+        total_time_span = (timestamps.max() - timestamps.min()).total_seconds() / 3600
+
+        print(f"\nTotal dataset spans {total_time_span:.2f} hours")
+        print(f"First timestamp: {timestamps.min()}")
+        print(f"Last timestamp: {timestamps.max()}")
+
+        # Determine mode based on total time span and force_mode
+        force_mode = viz_params.get('force_mode')
+        if force_mode is not None:
+            use_historical = force_mode == 'historical'
+            print(f"Using forced {force_mode} mode for surface fitting")
+        else:
+            use_historical = total_time_span > (1/6)  # More than 10 minutes
+            print(f"Using {'historical' if use_historical else 'snapshot'} mode for surface fitting")
+
+        # Prep visualization data
         viz_df = self.prepare_visualization_data(historical_df, viz_params)
         timestamps = sorted(viz_df['timestamp'].unique())
+
         if len(timestamps) < 2:
             print("Not enough historical data points to animate.")
             return
 
-        # 4) Ensure days_float
-        if 'days_float' not in viz_df.columns or viz_df['days_float'].isna().all():
-            if 'days_int' in viz_df.columns:
-                viz_df['days_float'] = viz_df['days_int'].astype(float)
-            else:
-                print("No valid days to expiry found in data.")
-                return
-
-        # 5) Build interpolation grid
+        # Build interpolation grid
         moneyness_min, moneyness_max = viz_df['moneyness'].min(), viz_df['moneyness'].max()
         days_min, days_max = viz_df['days_float'].min(), viz_df['days_float'].max()
         days_range = np.linspace(days_min, days_max, 50)
@@ -483,7 +768,11 @@ class ImpliedVolatilityAnalysis:
         moneyness_mesh, days_mesh = np.meshgrid(moneyness_range, days_range)
         grid_points = (moneyness_mesh, days_mesh)
 
-        # 6) Gather surfaces
+        # Create interpolation parameters with mode
+        interp_params = viz_params.copy()
+        interp_params['force_mode'] = 'historical' if use_historical else 'snapshot'
+
+        # Gather surfaces
         all_surfaces = {}
         global_zmin, global_zmax = np.inf, -np.inf
 
@@ -492,7 +781,7 @@ class ImpliedVolatilityAnalysis:
             if df_slice.empty:
                 continue
 
-            surf = self.interpolate_surface_svi(df_slice, grid_points, viz_params)
+            surf = self.interpolate_surface_svi(df_slice, grid_points, interp_params)
             if surf is None or np.isnan(surf).all():
                 continue
 
@@ -522,21 +811,77 @@ class ImpliedVolatilityAnalysis:
         )
         fig.add_trace(surface_trace)
 
+        # Create meshgrid to show lines on the surface
+        moneyness_mesh, days_mesh = np.meshgrid(moneyness_range, days_range)
+        moneyness_mesh_reverse, days_mesh_reverse = np.meshgrid(days_range, moneyness_range)
+
         frames = []
         for ts in timestamps:
             if ts not in all_surfaces:
                 continue
+
+            surface_data = [go.Surface(
+                x=moneyness_mesh,
+                y=days_mesh,
+                z=all_surfaces[ts],
+                colorscale='Viridis'
+            )]
+
+            # Add grid lines for each frame
+            for i, j, k in zip(moneyness_mesh, days_mesh, all_surfaces[ts]):
+                surface_data.append(
+                    go.Scatter3d(
+                        x=i,
+                        y=j,
+                        z=k,
+                        mode='lines',
+                        line=dict(color='black', width=1),
+                        showlegend=False
+                    )
+                )
+            for i, j, k in zip(moneyness_mesh_reverse, days_mesh_reverse, all_surfaces[ts].T):
+                surface_data.append(
+                    go.Scatter3d(
+                        x=j,
+                        y=i,
+                        z=k,
+                        mode='lines',
+                        line=dict(color='black', width=1),
+                        showlegend=False
+                    )
+                )
+
             frames.append(
                 go.Frame(
                     name=ts.strftime('%Y-%m-%d %H:%M:%S'),
-                    data=[go.Surface(
-                        x=moneyness_mesh,
-                        y=days_mesh,
-                        z=all_surfaces[ts],
-                        colorscale='Viridis'
-                    )]
+                    data=surface_data
                 )
             )
+
+        # Add initial grid lines
+        for i, j, k in zip(moneyness_mesh, days_mesh, last_surface):
+            fig.add_trace(
+                go.Scatter3d(
+                    x=i,
+                    y=j,
+                    z=k,
+                    mode='lines',
+                    line=dict(color='black', width=1),
+                    showlegend=False
+                )
+            )
+        for i, j, k in zip(moneyness_mesh_reverse, days_mesh_reverse, last_surface.T):
+            fig.add_trace(
+                go.Scatter3d(
+                    x=j,
+                    y=i,
+                    z=k,
+                    mode='lines',
+                    line=dict(color='black', width=1),
+                    showlegend=False
+                )
+            )
+
         fig.frames = frames
 
         fig.update_layout(
@@ -800,3 +1145,19 @@ class ImpliedVolatilityAnalysis:
         )
 
         fig.show()
+
+
+if __name__ == "__main__":
+    # Create an analyzer instance
+    analyzer = ImpliedVolatilityAnalysis('NVDA')
+
+    # Customized visualization
+    viz_params = {
+        'min_volume': 10,
+        'max_spread': 0.3,
+        'z_smooth': 0.2,
+        'time_bucket_size': 5,
+        'force_mode': 'snapshot'  # or 'historical'
+    }
+
+    analyzer.visualize(viz_params=viz_params)
