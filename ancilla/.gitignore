@@ -1,0 +1,13 @@
+.env
+
+logs/*
+logs/providers/*
+logs/strategies/*
+
+ancilla.egg-info
+
+.DS_Store
+__pycache__
+
+.idea
+.ropeproject
