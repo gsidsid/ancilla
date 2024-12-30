@@ -1,4 +1,4 @@
-# experiments/market_viz.py
+# experiments/asset_viz.py
 from ancilla.providers import PolygonDataProvider
 from ancilla.visualizations import MarketVisualizer
 from datetime import datetime, timedelta
@@ -18,7 +18,7 @@ def main():
 
     print(f"Running combined analysis for {symbol}...")
 
-    # Create all visualizations
+    # Create basic visualizations
     figs = []
 
     # Technical Analysis

@@ -1,5 +1,6 @@
 ancilla.egg-info
 __pycache__
+.ancilla_cache
 
 sandbox/vol_surface_history
 sandbox/*.csv

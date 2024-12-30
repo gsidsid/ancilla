@@ -47,202 +47,6 @@ class PolygonDataProvider:
         self.last_request_time = 0
         self.min_request_interval = 0.025  # 25ms between requests
 
-    def _generate_cache_key(self, method: str, **params) -> str:
-        """Generate a standardized cache key."""
-        parts = [method]
-        for k, v in sorted(params.items()):
-            # Handle different types of values
-            if isinstance(v, (datetime, date)):
-                v = v.isoformat()
-            elif isinstance(v, (list, tuple)):
-                v = ','.join(str(x) for x in v)
-            parts.append(f"{k}={v}")
-        return ':'.join(parts)
-
-    def _get_cached_data(self, method: str, **params) -> Optional[Any]:
-        """Get data from cache using standardized key."""
-        cache_key = self._generate_cache_key(method, **params)
-        return self.cache.get(cache_key)
-
-    def _cache_data(self, data: Any, method: str, **params) -> None:
-        """Cache data using standardized key."""
-        if data is not None:
-            cache_key = self._generate_cache_key(method, **params)
-            self.cache.set(cache_key, data)
-
-    def _rate_limit(self) -> None:
-        """Implement rate limiting between API calls"""
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.min_request_interval:
-            time.sleep(self.min_request_interval - time_since_last)
-        self.last_request_time = time.time()
-
-    def _retry_with_backoff(self, func: Callable[..., Any], *args, **kwargs) -> Any:
-        """
-        Execute function with exponential backoff retry logic.
-
-        Args:
-            func: Function to execute
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-
-        Returns:
-            Result from the function
-        """
-        for attempt in range(self.max_retries):
-            try:
-                self._rate_limit()
-                return func(*args, **kwargs)
-            except Exception as e:
-                if attempt == self.max_retries - 1:
-                    self.logger.error(f"Max retries reached: {str(e)}")
-                    raise
-                wait_time = self.retry_delay * (2 ** attempt)
-                self.logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {str(e)}")
-                time.sleep(wait_time)
-
-    def _validate_date_range(
-        self,
-        start_date: Union[str, datetime, date],
-        end_date: Optional[Union[str, datetime, date]] = None
-    ) -> Tuple[datetime, datetime]:
-        """Validate and standardize date inputs"""
-        try:
-            if isinstance(start_date, str):
-                start_date = pd.to_datetime(start_date)
-            if isinstance(end_date, str):
-                end_date = pd.to_datetime(end_date)
-            if end_date is None:
-                end_date = datetime.now(self.utc_tz)
-
-            # Convert to UTC datetime objects
-            if isinstance(start_date, date):
-                start_date = datetime.combine(start_date, datetime.min.time())
-            if isinstance(end_date, date):
-                end_date = datetime.combine(end_date, datetime.max.time())
-
-            # Ensure timezone awareness
-            if start_date.tzinfo is None:
-                start_date = self.eastern_tz.localize(start_date)
-            if end_date.tzinfo is None:
-                end_date = self.eastern_tz.localize(end_date)
-
-            # Convert to UTC
-            start_date = start_date.astimezone(self.utc_tz)
-            end_date = end_date.astimezone(self.utc_tz)
-
-            return start_date, end_date
-
-        except Exception as e:
-            self.logger.error(f"Error validating date range: {str(e)}")
-            raise ValueError("Invalid date range provided")
-
-    def _is_regular_session(self, dt: datetime) -> bool:
-        """Check if timestamp is during regular trading hours (9:30-16:00 ET)"""
-        try:
-            if dt.tzinfo is None:
-                dt = self.eastern_tz.localize(dt)
-            elif dt.tzinfo != self.eastern_tz:
-                dt = dt.astimezone(self.eastern_tz)
-
-            # Check for weekends
-            if dt.weekday() >= 5:
-                return False
-
-            # Standard market hours
-            market_open = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-            market_close = dt.replace(hour=16, minute=0, second=0, microsecond=0)
-
-            # Check for early closes
-            if ((dt.month == 12 and dt.day == 24) or  # Christmas Eve
-                (dt.month == 11 and dt.weekday() == 4 and dt.day >= 23 and dt.day <= 29)):  # Day after Thanksgiving
-                market_close = dt.replace(hour=13, minute=0, second=0, microsecond=0)
-
-            return market_open <= dt <= market_close
-
-        except Exception as e:
-            self.logger.error(f"Error checking market hours: {str(e)}")
-            return False
-
-    def _validate_option_data(self, option: OptionData, days_to_expiry: int) -> bool:
-        """Validate option data with expiry-dependent criteria."""
-        try:
-            # Basic field validation
-            if option.strike <= 0 or option.underlying_price <= 0:
-                return False
-
-            if option.contract_type not in ['call', 'put']:
-                return False
-
-            # Adjust IV bounds based on time to expiry
-            max_iv = 5.0  # 500% vol cap for short dated
-            if days_to_expiry > 60:
-                max_iv = 2.0  # 200% vol cap for longer dated
-            elif days_to_expiry > 180:
-                max_iv = 1.5  # 150% vol cap for very long dated
-
-            if option.implied_volatility is None or option.implied_volatility <= 0 or option.implied_volatility > max_iv:
-                return False
-
-            # Greeks validation - more permissive for longer dated
-            if option.delta is not None:
-                if not -1 <= option.delta <= 1:
-                    return False
-
-            if option.gamma is not None:
-                if option.gamma < 0:
-                    return False
-                # Add upper bound check for gamma
-                if days_to_expiry <= 30 and option.gamma > 1:
-                    return False
-
-            # Market data validation
-            if option.volume is not None:
-                if option.volume < 0:
-                    return False
-
-            if option.bid is not None and option.ask is not None:
-                if option.bid > option.ask:
-                    return False
-
-            # Expiration validation
-            now = datetime.now(self.utc_tz)
-            if option.expiration < now:
-                return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error validating option data: {str(e)}, {option}")
-            return False
-
-    def _validate_bar_data(self, bar: BarData) -> bool:
-        """Validate price bar data for consistency"""
-        try:
-            # Price consistency
-            if not (bar.low <= bar.high and
-                   bar.low <= bar.open and
-                   bar.low <= bar.close and
-                   bar.high >= bar.open and
-                   bar.high >= bar.close):
-                return False
-
-            # Volume should be non-negative
-            if bar.volume < 0:
-                return False
-
-            # VWAP should be within high/low range if present
-            if bar.vwap is not None:
-                if not (bar.low <= bar.vwap <= bar.high):
-                    return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error validating bar data: {str(e)}")
-            return False
-
     def get_current_price(
         self,
         ticker: str
@@ -492,14 +296,13 @@ class PolygonDataProvider:
                             continue
 
                     # Volume
+                    volume = 0
                     if hasattr(option, 'day') and option.day:
                         volume = option.day.volume
                         if volume and volume < min_volume:
                             skipped_count += 1
                             skipped_due_to_volume += 1
                             continue
-                    else:
-                        volume = 0
 
                     # Create OptionData object
                     opt_data = OptionData(
@@ -973,3 +776,199 @@ class PolygonDataProvider:
                 df[col] = np.where(df[col] > upper_bound, upper_bound, df[col])
                 df[col] = np.where(df[col] < lower_bound, lower_bound, df[col])
         return df
+
+    def _generate_cache_key(self, method: str, **params) -> str:
+        """Generate a standardized cache key."""
+        parts = [method]
+        for k, v in sorted(params.items()):
+            # Handle different types of values
+            if isinstance(v, (datetime, date)):
+                v = v.isoformat()
+            elif isinstance(v, (list, tuple)):
+                v = ','.join(str(x) for x in v)
+            parts.append(f"{k}={v}")
+        return ':'.join(parts)
+
+    def _get_cached_data(self, method: str, **params) -> Optional[Any]:
+        """Get data from cache using standardized key."""
+        cache_key = self._generate_cache_key(method, **params)
+        return self.cache.get(cache_key)
+
+    def _cache_data(self, data: Any, method: str, **params) -> None:
+        """Cache data using standardized key."""
+        if data is not None:
+            cache_key = self._generate_cache_key(method, **params)
+            self.cache.set(cache_key, data)
+
+    def _rate_limit(self) -> None:
+        """Implement rate limiting between API calls"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.min_request_interval:
+            time.sleep(self.min_request_interval - time_since_last)
+        self.last_request_time = time.time()
+
+    def _retry_with_backoff(self, func: Callable[..., Any], *args, **kwargs) -> Any:
+        """
+        Execute function with exponential backoff retry logic.
+
+        Args:
+            func: Function to execute
+            *args: Positional arguments for the function
+            **kwargs: Keyword arguments for the function
+
+        Returns:
+            Result from the function
+        """
+        for attempt in range(self.max_retries):
+            try:
+                self._rate_limit()
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    self.logger.error(f"Max retries reached: {str(e)}")
+                    raise
+                wait_time = self.retry_delay * (2 ** attempt)
+                self.logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {str(e)}")
+                time.sleep(wait_time)
+
+    def _validate_date_range(
+        self,
+        start_date: Union[str, datetime, date],
+        end_date: Optional[Union[str, datetime, date]] = None
+    ) -> Tuple[datetime, datetime]:
+        """Validate and standardize date inputs"""
+        try:
+            if isinstance(start_date, str):
+                start_date = pd.to_datetime(start_date)
+            if isinstance(end_date, str):
+                end_date = pd.to_datetime(end_date)
+            if end_date is None:
+                end_date = datetime.now(self.utc_tz)
+
+            # Convert to UTC datetime objects
+            if isinstance(start_date, date):
+                start_date = datetime.combine(start_date, datetime.min.time())
+            if isinstance(end_date, date):
+                end_date = datetime.combine(end_date, datetime.max.time())
+
+            # Ensure timezone awareness
+            if start_date.tzinfo is None:
+                start_date = self.eastern_tz.localize(start_date)
+            if end_date.tzinfo is None:
+                end_date = self.eastern_tz.localize(end_date)
+
+            # Convert to UTC
+            start_date = start_date.astimezone(self.utc_tz)
+            end_date = end_date.astimezone(self.utc_tz)
+
+            return start_date, end_date
+
+        except Exception as e:
+            self.logger.error(f"Error validating date range: {str(e)}")
+            raise ValueError("Invalid date range provided")
+
+    def _is_regular_session(self, dt: datetime) -> bool:
+        """Check if timestamp is during regular trading hours (9:30-16:00 ET)"""
+        try:
+            if dt.tzinfo is None:
+                dt = self.eastern_tz.localize(dt)
+            elif dt.tzinfo != self.eastern_tz:
+                dt = dt.astimezone(self.eastern_tz)
+
+            # Check for weekends
+            if dt.weekday() >= 5:
+                return False
+
+            # Standard market hours
+            market_open = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = dt.replace(hour=16, minute=0, second=0, microsecond=0)
+
+            # Check for early closes
+            if ((dt.month == 12 and dt.day == 24) or  # Christmas Eve
+                (dt.month == 11 and dt.weekday() == 4 and dt.day >= 23 and dt.day <= 29)):  # Day after Thanksgiving
+                market_close = dt.replace(hour=13, minute=0, second=0, microsecond=0)
+
+            return market_open <= dt <= market_close
+
+        except Exception as e:
+            self.logger.error(f"Error checking market hours: {str(e)}")
+            return False
+
+    def _validate_option_data(self, option: OptionData, days_to_expiry: int) -> bool:
+        """Validate option data with expiry-dependent criteria."""
+        try:
+            # Basic field validation
+            if option.strike <= 0 or option.underlying_price <= 0:
+                return False
+
+            if option.contract_type not in ['call', 'put']:
+                return False
+
+            # Adjust IV bounds based on time to expiry
+            max_iv = 5.0  # 500% vol cap for short dated
+            if days_to_expiry > 60:
+                max_iv = 2.0  # 200% vol cap for longer dated
+            elif days_to_expiry > 180:
+                max_iv = 1.5  # 150% vol cap for very long dated
+
+            if option.implied_volatility is None or option.implied_volatility <= 0 or option.implied_volatility > max_iv:
+                return False
+
+            # Greeks validation - more permissive for longer dated
+            if option.delta is not None:
+                if not -1 <= option.delta <= 1:
+                    return False
+
+            if option.gamma is not None:
+                if option.gamma < 0:
+                    return False
+                # Add upper bound check for gamma
+                if days_to_expiry <= 30 and option.gamma > 1:
+                    return False
+
+            # Market data validation
+            if option.volume is not None:
+                if option.volume < 0:
+                    return False
+
+            if option.bid is not None and option.ask is not None:
+                if option.bid > option.ask:
+                    return False
+
+            # Expiration validation
+            now = datetime.now(self.utc_tz)
+            if option.expiration < now:
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error validating option data: {str(e)}, {option}")
+            return False
+
+    def _validate_bar_data(self, bar: BarData) -> bool:
+        """Validate price bar data for consistency"""
+        try:
+            # Price consistency
+            if not (bar.low <= bar.high and
+                   bar.low <= bar.open and
+                   bar.low <= bar.close and
+                   bar.high >= bar.open and
+                   bar.high >= bar.close):
+                return False
+
+            # Volume should be non-negative
+            if bar.volume < 0:
+                return False
+
+            # VWAP should be within high/low range if present
+            if bar.vwap is not None:
+                if not (bar.low <= bar.vwap <= bar.high):
+                    return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error validating bar data: {str(e)}")
+            return False

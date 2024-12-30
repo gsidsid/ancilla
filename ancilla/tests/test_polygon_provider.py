@@ -146,7 +146,7 @@ class TestPolygonDataProviderMock:
             underlying_price=100.0,
             volume=100,
         )
-        assert provider._validate_option_data(valid_option)
+        assert provider._validate_option_data(valid_option, days_to_expiry=30)
 
         invalid_option = OptionData(
             ticker="AAPL",
@@ -161,40 +161,7 @@ class TestPolygonDataProviderMock:
             underlying_price=100.0,
             volume=100,
         )
-        assert not provider._validate_option_data(invalid_option)
-
-    def test_cache_behavior(self, provider, mock_client):
-        # Build a mock 'session' with actual float/int fields
-        session_mock = Mock()
-        session_mock.close = 100.0        # Price
-        session_mock.last = None         # Or float if needed
-        session_mock.bid = 99.95
-        session_mock.ask = 100.05
-        session_mock.bid_size = 50
-        session_mock.ask_size = 50
-        session_mock.volume = 1000
-        session_mock.vwap = 99.8         # Or None if you prefer
-
-        # Attach this session to a mock 'snapshot'
-        snapshot_mock = Mock()
-        snapshot_mock.session = session_mock
-        snapshot_mock.prev_day = None
-
-        # Return that snapshot from get_snapshot_ticker
-        mock_client.get_snapshot_ticker.return_value = snapshot_mock
-
-        # First call -> triggers an API call
-        first_call = provider.get_current_price("AAPL")
-        assert mock_client.get_snapshot_ticker.call_count == 1
-
-        # Second call -> should be cached (no new calls)
-        second_call = provider.get_current_price("AAPL")
-        assert mock_client.get_snapshot_ticker.call_count == 1
-
-        # Both calls should yield valid MarketSnapshot objects
-        assert first_call is not None
-        assert second_call is not None
-        assert first_call.price == second_call.price
+        assert not provider._validate_option_data(invalid_option, days_to_expiry=30)
 
     def test_intraday_bars_mock(self, provider, mock_client):
         """

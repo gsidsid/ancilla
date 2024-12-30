@@ -36,19 +36,7 @@ def create_volatility_surface(
         fill_value=np.nan
     )
 
-    # Fill missing values with nearest neighbor
-    mask = np.isnan(interpolated)
-    if np.any(mask):
-        nearest = griddata(
-            points,
-            filtered_ivs,
-            (norm_new_strikes[None, :], new_expiries[:, None]),
-            method='nearest'
-        )
-        interpolated[mask] = nearest[mask]
-
     return interpolated
-
 
 def estimate_liquidity_multiplier(
     volume: Optional[int],

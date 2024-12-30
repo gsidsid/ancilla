@@ -13,19 +13,20 @@ def main():
     market = MarketVisualizer(provider)
 
     # Define date range
-    end_date = datetime(2024, 12, 21)
-    start_date = datetime(2024, 12, 1)
+    end_date = datetime(2024, 12, 1)
+    start_date = datetime(2024, 8, 1)
     symbol = "AAPL"
 
     print("Creating volatility surfaces...")
-
-    # Create animation using the visualizer
+    # Limitation: Only visualizes LEAPS data which can be kinda sparse
     fig = market.plot_volatility_surfaces(
         ticker=symbol,
         date_range=(start_date, end_date),
-        expiration_range=(30, 360),
+        expiration_range=(30, 180),
         moneyness_range=(0.9, 1.1),
-        delta_range=(0, 1),
+        delta_range=(0.1, 0.9),
+        frame_duration=100,
+        n_interpolated_frames=1,
         max_workers=16
     )
 

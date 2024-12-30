@@ -201,6 +201,7 @@ class MarketVisualizer:
         moneyness_range: Tuple[float, float] = (0.85, 1.15),
         delta_range: Tuple[float, float] = (0, 1),
         frame_duration: int = 100,
+        n_interpolated_frames: int = 3,
         max_workers: int = 10
     ) -> Optional[go.Figure]:
         """Create an animated volatility surface with fixed surface generation."""
@@ -341,6 +342,12 @@ class MarketVisualizer:
             # Get max y axis value from first frame
             actual_max_expiry = max([f.data[0].y.max() for f in frames])
 
+            # Re-calculate min max values for iv across all frames
+            for frame in frames:
+                for surface in frame.data:
+                    z_min = min(z_min, float(surface.z.min()))
+                    z_max = max(z_max, float(surface.z.max()))
+
             # Analyze surface evolution
             evolution_stats = {
                 "total_frames": len(frames),
@@ -357,7 +364,7 @@ class MarketVisualizer:
             self.logger.debug(f"Animation statistics:\n{json.dumps(evolution_stats, indent=2)}")
 
             # 10 frames per second target
-            frames = self.interpolate_frames(frames, n_intermediate=9)
+            frames = self.interpolate_frames(frames, n_intermediate=n_interpolated_frames)
 
             # Create figure with animation
             fig = go.Figure(
@@ -373,7 +380,7 @@ class MarketVisualizer:
                     yaxis_title='Time to Expiry',
                     zaxis_title='Implied Volatility',
                     yaxis=dict(range=[tte_min, actual_max_expiry]),
-                    zaxis=dict(range=[z_min, z_max]),
+                    zaxis=dict(range=[0, 80]),
                     camera=dict(
                         up=dict(x=0, y=0, z=1),
                         center=dict(x=0, y=0, z=0),
