@@ -6,5 +6,6 @@ ancilla is a library of all time
 - rudimentary visualizations
 - backtesting?
 
-notably data is cached both locally and in-memory across all functions
 ![Lightning Mcqueen](lightningmcqueen.jpeg)
+
+notably data is cached pretty well
