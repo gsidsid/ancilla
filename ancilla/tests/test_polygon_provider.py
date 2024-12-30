@@ -134,6 +134,7 @@ class TestPolygonDataProviderMock:
 
     def test_option_greeks_validation(self, provider):
         valid_option = OptionData(
+            ticker="AAPL",
             strike=100.0,
             expiration=datetime.now(UTC) + timedelta(days=30),
             contract_type="call",
@@ -148,6 +149,7 @@ class TestPolygonDataProviderMock:
         assert provider._validate_option_data(valid_option)
 
         invalid_option = OptionData(
+            ticker="AAPL",
             strike=100.0,
             expiration=datetime.now(UTC) + timedelta(days=30),
             contract_type="call",

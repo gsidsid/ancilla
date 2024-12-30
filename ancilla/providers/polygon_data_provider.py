@@ -1,38 +1,30 @@
 # ancilla/providers/polygon_data_provider.py
-from typing import Optional, List, Dict, Union, Tuple, Callable, Any
+from collections import defaultdict
 from datetime import datetime, date, timedelta
-import pandas as pd
+from typing import Optional, List, Dict, Union, Tuple, Callable, Any
+
+# Third party imports
 import numpy as np
+import pandas as pd
 from polygon import RESTClient
 import pytz
-from functools import lru_cache
 import time
-from collections import defaultdict
-from scipy.interpolate import griddata
 
+# Local imports
 from ancilla.models import OptionData, BarData, MarketSnapshot
+from ancilla.utils.caching import HybridCache
 from ancilla.utils.logging import MarketDataLogger
 
 class PolygonDataProvider:
-    """
-    A robust data provider for Polygon.io API with standardized outputs and error handling.
-
-    Features:
-    - Consistent timezone handling (all timestamps in UTC)
-    - Automatic rate limiting and retry logic
-    - Robust error handling and logging
-    - Caching of frequently accessed data
-    - Data validation and cleaning
-    """
-
     def __init__(self, api_key: str, max_retries: int = 3, retry_delay: float = 1.0):
         """
-        Initialize the Polygon data provider.
+        Initialize the Polygon data provider with multi-level caching.
 
         Args:
             api_key: Polygon.io API key
             max_retries: Maximum number of API retry attempts
             retry_delay: Base delay between retries (uses exponential backoff)
+            cache_dir: Directory for file cache
         """
         self.client = RESTClient(api_key)
         self.max_retries = max_retries
@@ -42,16 +34,41 @@ class PolygonDataProvider:
 
         # Set up logging
         self.logger = MarketDataLogger("polygon").get_logger()
-        self.logger.info("Initializing Polygon data provider")
+        self.logger.debug("Initializing Polygon data provider")
 
-        # Cache settings
-        self.cache_ttl = 300  # 5 minutes cache for prices
+        # Initialize cache
+        self.cache = HybridCache(
+            memory_ttl=300,      # 5 minutes memory cache
+            file_ttl=86400,      # 24 hours file cache
+            cleanup_interval=3600 # Cleanup every hour
+        )
+
+        # Rate limiting
         self.last_request_time = 0
-        self.min_request_interval = 0.1  # 100ms between requests
+        self.min_request_interval = 0.025  # 25ms between requests
 
-        # Initialize option expirations cache
-        self._option_expirations_cache = {}
-        self._cache_update_time = None
+    def _generate_cache_key(self, method: str, **params) -> str:
+        """Generate a standardized cache key."""
+        parts = [method]
+        for k, v in sorted(params.items()):
+            # Handle different types of values
+            if isinstance(v, (datetime, date)):
+                v = v.isoformat()
+            elif isinstance(v, (list, tuple)):
+                v = ','.join(str(x) for x in v)
+            parts.append(f"{k}={v}")
+        return ':'.join(parts)
+
+    def _get_cached_data(self, method: str, **params) -> Optional[Any]:
+        """Get data from cache using standardized key."""
+        cache_key = self._generate_cache_key(method, **params)
+        return self.cache.get(cache_key)
+
+    def _cache_data(self, data: Any, method: str, **params) -> None:
+        """Cache data using standardized key."""
+        if data is not None:
+            cache_key = self._generate_cache_key(method, **params)
+            self.cache.set(cache_key, data)
 
     def _rate_limit(self) -> None:
         """Implement rate limiting between API calls"""
@@ -148,8 +165,8 @@ class PolygonDataProvider:
             self.logger.error(f"Error checking market hours: {str(e)}")
             return False
 
-    def _validate_option_data(self, option: OptionData) -> bool:
-        """Validate option data for reasonable values and consistency"""
+    def _validate_option_data(self, option: OptionData, days_to_expiry: int) -> bool:
+        """Validate option data with expiry-dependent criteria."""
         try:
             # Basic field validation
             if option.strike <= 0 or option.underlying_price <= 0:
@@ -158,16 +175,26 @@ class PolygonDataProvider:
             if option.contract_type not in ['call', 'put']:
                 return False
 
-            if option.implied_volatility <= 0 or option.implied_volatility > 5:
+            # Adjust IV bounds based on time to expiry
+            max_iv = 5.0  # 500% vol cap for short dated
+            if days_to_expiry > 60:
+                max_iv = 2.0  # 200% vol cap for longer dated
+            elif days_to_expiry > 180:
+                max_iv = 1.5  # 150% vol cap for very long dated
+
+            if option.implied_volatility is None or option.implied_volatility <= 0 or option.implied_volatility > max_iv:
                 return False
 
-            # Greeks validation
+            # Greeks validation - more permissive for longer dated
             if option.delta is not None:
                 if not -1 <= option.delta <= 1:
                     return False
 
             if option.gamma is not None:
                 if option.gamma < 0:
+                    return False
+                # Add upper bound check for gamma
+                if days_to_expiry <= 30 and option.gamma > 1:
                     return False
 
             # Market data validation
@@ -187,7 +214,7 @@ class PolygonDataProvider:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error validating option data: {str(e)}")
+            self.logger.error(f"Error validating option data: {str(e)}, {option}")
             return False
 
     def _validate_bar_data(self, bar: BarData) -> bool:
@@ -216,19 +243,18 @@ class PolygonDataProvider:
             self.logger.error(f"Error validating bar data: {str(e)}")
             return False
 
-    @lru_cache(maxsize=128)
-    def get_current_price(self, ticker: str) -> Optional[MarketSnapshot]:
-        """
-        Get the current price snapshot for a ticker with caching.
-
-        Args:
-            ticker: Stock symbol
-
-        Returns:
-            MarketSnapshot object or None if data unavailable
-        """
+    def get_current_price(
+        self,
+        ticker: str
+    ) -> Optional[MarketSnapshot]:
+        """Get current price snapshot with short-term caching."""
         try:
-            self.logger.debug(f"Fetching current price for {ticker}")
+            # Use shorter cache duration for current price
+            cache_params = {'ticker': ticker}
+            cached_data = self._get_cached_data('current_price', **cache_params)
+            if cached_data is not None:
+                return MarketSnapshot(**cached_data)
+
             snapshot = self._retry_with_backoff(
                 self.client.get_snapshot_ticker,
                 "stocks",
@@ -238,7 +264,7 @@ class PolygonDataProvider:
             if snapshot:
                 now = datetime.now(self.utc_tz)
 
-                # Extract price from session or fall back to prev_day
+                # Extract price data
                 price = None
                 session = getattr(snapshot, 'session', None)
                 if session:
@@ -251,7 +277,8 @@ class PolygonDataProvider:
                     self.logger.warning(f"No valid price data available for {ticker}")
                     return None
 
-                return MarketSnapshot(
+                # Create snapshot object
+                market_snapshot = MarketSnapshot(
                     timestamp=now,
                     price=price,
                     bid=float(session.bid) if session and hasattr(session, 'bid') else None,
@@ -262,16 +289,23 @@ class PolygonDataProvider:
                     vwap=float(session.vwap) if session and hasattr(session, 'vwap') else None
                 )
 
-            self.logger.warning(f"No snapshot data available for {ticker}")
+                # Cache the result
+                self._cache_data(vars(market_snapshot), 'current_price', **cache_params)
+
+                return market_snapshot
+
             return None
 
         except Exception as e:
             self.logger.error(f"Error fetching current price for {ticker}: {str(e)}")
             return None
 
-    def get_options_expiration(self, ticker: str) -> Optional[List[datetime]]:
+    def get_options_expiration(
+        self,
+        ticker: str
+    ) -> Optional[List[datetime]]:
         """
-        Get available option expiration dates for a ticker.
+        Get available option expiration dates for a ticker with caching.
 
         Args:
             ticker: Stock symbol
@@ -280,14 +314,14 @@ class PolygonDataProvider:
             List of expiration dates in UTC
         """
         try:
-            self.logger.debug(f"Fetching option expirations for {ticker}")
+            # Check cache first
+            cache_params = {'ticker': ticker}
+            cached_data = self._get_cached_data('options_expiration', **cache_params)
+            if cached_data is not None:
+                # Convert ISO format strings back to datetime objects
+                return [pd.to_datetime(exp_date) for exp_date in cached_data]
 
-            # Check cache
-            now = datetime.now(self.utc_tz)
-            if (ticker in self._option_expirations_cache and
-                self._cache_update_time and
-                (now - self._cache_update_time).total_seconds() < self.cache_ttl):
-                return self._option_expirations_cache[ticker]
+            self.logger.debug(f"Fetching option expirations for {ticker}")
 
             # Get reference data for options
             contracts = self._retry_with_backoff(
@@ -320,9 +354,10 @@ class PolygonDataProvider:
             # Sort expiration dates
             sorted_expirations = sorted(list(expirations))
 
-            # Update cache
-            self._option_expirations_cache[ticker] = sorted_expirations
-            self._cache_update_time = now
+            if sorted_expirations:
+                # Cache the result as ISO format strings for better serialization
+                cache_data = [exp_date.isoformat() for exp_date in sorted_expirations]
+                self._cache_data(cache_data, 'options_expiration', **cache_params)
 
             self.logger.debug(f"Found {len(sorted_expirations)} expiration dates for {ticker}")
             return sorted_expirations
@@ -334,62 +369,110 @@ class PolygonDataProvider:
     def get_options_chain(
         self,
         ticker: str,
+        reference_date: Optional[datetime] = None,
         expiration_range_days: int = 90,
+        min_days: int = 7,
+        min_volume: int = 10,
         delta_range: Tuple[float, float] = (0.1, 0.9),
-        min_volume: int = 10
+        interpolation_days: Optional[int] = None,
     ) -> Optional[List[OptionData]]:
         """
-        Get the full options chain for a ticker with filtering.
+        Get the options chain for a ticker with caching and filtering.
 
         Args:
-            ticker: Stock symbol
-            expiration_range_days: How many days forward to fetch expirations
-            delta_range: Only include options within this delta range
-            min_volume: Minimum option volume to include
+            ticker: Stock symbol.
+            reference_date: The date to reference for fetching options (defaults to now).
+            expiration_range_days: Number of days forward to fetch expirations.
+            min_days: Minimum days until expiration.
+            min_volume: Minimum option volume to include.
+            delta_range: Only include options within this delta range (magnitude).
+            interpolation_days: (Optional) Additional parameter for future use.
 
         Returns:
-            List of OptionData objects
+            List of OptionData objects or None if no data is available.
         """
         try:
-            # Get current price first
-            snapshot = self.get_current_price(ticker)
-            if not snapshot:
-                self.logger.error(f"Could not get current price for {ticker}")
-                return None
+            # Define cache parameters
+            cache_params = {
+                'ticker': ticker,
+                'reference_date': reference_date.isoformat() if reference_date else None,
+                'expiration_range_days': expiration_range_days,
+                'min_days': min_days,
+                'min_volume': min_volume,
+                'delta_range': delta_range,
+                'interpolation_days': interpolation_days
+            }
 
-            current_price = snapshot.price
+            # Attempt to retrieve cached data
+            cached_data = self._get_cached_data('options_chain', **cache_params)
+            if cached_data is not None:
+                self.logger.debug(f"Cache hit for {ticker}. Returning cached options chain.")
+                # Reconstruct OptionData objects from cached data
+                return [OptionData(**opt_dict) for opt_dict in cached_data]
+
+            self.logger.debug(f"No cache found for {ticker}. Fetching options chain from API.")
+
+            # Get price as of reference date, if reference date is today use current price
+            current_price = None
+            if reference_date is None or reference_date.date() == datetime.now(self.utc_tz).date():
+                snapshot = self.get_current_price(ticker)
+                if not snapshot:
+                    self.logger.error(f"Could not get current price for {ticker}")
+                    return None
+
+                current_price = snapshot.price
+            else:
+                # Get the closing price for the reference date
+                daily_bars = self.get_daily_bars(ticker, reference_date, reference_date)
+                if daily_bars is None or daily_bars.empty:
+                    self.logger.error(f"No daily bars found for {ticker} on {reference_date}")
+                    return None
+                current_price = daily_bars['close'].iloc[0]
+
 
             # Set up date range
-            today = datetime.now(self.utc_tz)
-            end_date = today + timedelta(days=expiration_range_days)
+            now = reference_date if reference_date else datetime.now(self.utc_tz)
+            min_expiry = now + timedelta(days=min_days)
+            # max expiry is the reference date + min days + expiration range
+            max_expiry = now + timedelta(days=expiration_range_days)
 
-            self.logger.debug(f"Fetching options chain for {ticker}")
-            options_data = []
-
-            # Get options chain
-            chain = self._retry_with_backoff(
+            self.logger.info(f"Querying {ticker} chain: T+ {min_days}d to {expiration_range_days}d, Ref={now}")
+            chain_generator = self._retry_with_backoff(
                 self.client.list_snapshot_options_chain,
                 ticker,
                 params={
-                    "expiration_date.gte": today.strftime('%Y-%m-%d'),
-                    "expiration_date.lte": end_date.strftime('%Y-%m-%d'),
+                    "expiration_date.gte": min_expiry.strftime('%Y-%m-%d'),
+                    "expiration_date.lte": max_expiry.strftime('%Y-%m-%d'),
+                    "as_of": now.strftime('%Y-%m-%d'),
                 }
             )
+            chain = list(chain_generator)
+            if not chain:
+                self.logger.info("No options returned from API")
+                return None
 
             processed_count = 0
             skipped_count = 0
+            skipped_due_to_volume = 0
+            skipped_due_to_expiry = 0
+            skipped_due_to_delta = 0
+            skipped_due_to_iv = 0
+            processed_options = []
 
             for option in chain:
                 try:
-                    if not hasattr(option, 'details') or not option.details:
-                        # self.logger.debug(f"Skipping option: Missing details for {ticker}")
-                        skipped_count += 1
-                        continue
-
                     details = option.details
                     contract_type = details.contract_type.lower()
                     strike = float(details.strike_price)
                     expiration = pd.to_datetime(details.expiration_date).tz_localize(self.eastern_tz)
+                    days_to_expiry = (expiration - now).days
+
+                    # Check expiration range
+                    days_to_expiry = (expiration - now).days
+                    if days_to_expiry < min_days or days_to_expiry > expiration_range_days:
+                        skipped_count += 1
+                        skipped_due_to_expiry += 1
+                        continue
 
                     # Greeks
                     if hasattr(option, 'greeks') and option.greeks:
@@ -398,74 +481,81 @@ class PolygonDataProvider:
                         theta = float(option.greeks.theta) if option.greeks.theta else None
                         vega = float(option.greeks.vega) if option.greeks.vega else None
                     else:
+                        self.logger.debug(f"No Greeks for {option.details.ticker}")
                         delta = gamma = theta = vega = None
 
-                    # Log why options are skipped due to delta range
-                    if delta and not (delta_range[0] <= abs(delta) <= delta_range[1]):
-                        # self.logger.debug(f"Skipping option: Delta {delta} out of range for {ticker}")
-                        skipped_count += 1
-                        continue
-
-                    # Market data
-                    if hasattr(option, 'last_quote') and option.last_quote:
-                        bid = float(option.last_quote.bid) if option.last_quote.bid else None
-                        ask = float(option.last_quote.ask) if option.last_quote.ask else None
-                    else:
-                        bid = ask = None
-
-                    # Volume and OI
-                    if hasattr(option, 'day') and option.day:
-                        volume = int(option.day.volume) if option.day.volume else 0
-                        open_interest = int(option.day.open_interest) if hasattr(option.day, 'open_interest') else None
-                        if volume < min_volume:
-                            # self.logger.debug(f"Skipping option: Volume {volume} below minimum for {ticker}")
+                    # Check delta range using absolute value
+                    if delta is not None:
+                        if not (delta_range[0] <= abs(delta) <= delta_range[1]):
                             skipped_count += 1
+                            skipped_due_to_delta += 1
+                            continue
+
+                    # Volume
+                    if hasattr(option, 'day') and option.day:
+                        volume = option.day.volume
+                        if volume and volume < min_volume:
+                            skipped_count += 1
+                            skipped_due_to_volume += 1
                             continue
                     else:
                         volume = 0
-                        open_interest = None
 
-                    # Implied volatility
-                    if hasattr(option, 'implied_volatility') and option.implied_volatility:
-                        iv = float(option.implied_volatility) / 100  # Convert to decimal
-                    else:
-                        # self.logger.debug(f"Skipping option: Missing implied volatility for {ticker}")
-                        skipped_count += 1
-                        continue
-
-                    # Validate and add to options_data
+                    # Create OptionData object
                     opt_data = OptionData(
+                        ticker=option.details.ticker,
                         strike=strike,
                         expiration=expiration,
                         contract_type=contract_type,
-                        implied_volatility=iv,
+                        implied_volatility=option.implied_volatility,
                         underlying_price=current_price,
                         delta=delta,
                         gamma=gamma,
                         theta=theta,
                         vega=vega,
-                        bid=bid,
-                        ask=ask,
+                        bid=None,
+                        ask=None,
                         volume=volume,
-                        open_interest=open_interest,
-                        last_trade=None  # Handle if last_trade is not present
+                        open_interest=option.open_interest,
+                        last_trade=None
                     )
 
-                    if self._validate_option_data(opt_data):
-                        options_data.append(opt_data)
+                    # Validate and add to processed options
+                    if self._validate_option_data(opt_data, days_to_expiry):
+                        processed_options.append(opt_data)
                         processed_count += 1
                     else:
-                        # self.logger.debug(f"Skipping option: Validation failed for {ticker}")
                         skipped_count += 1
+                        self.logger.debug(f"Skipping option due to failed validation: {ticker}")
 
                 except Exception as e:
-                    self.logger.warning(f"Error processing individual option for {ticker}: {str(e)}")
+                    self.logger.warning(f"Error processing option {ticker} for {ticker}: {str(e)}")
                     skipped_count += 1
                     continue
 
-            self.logger.info(f"Processed {processed_count} options, skipped {skipped_count} invalid/filtered options")
-            return options_data if options_data else None
+            # Create a detailed summary log
+            summary_lines = [
+                f"{ticker} T+ {min_days}d to {expiration_range_days}d Ref={now}",
+                "═" * 50,
+                f"✓ Successfully processed: {processed_count} options",
+                f"✗ Total skipped/filtered: {skipped_count} options",
+                "─" * 50,
+                "Skipped Options Breakdown:",
+                f"• Low volume (<{min_volume}):        {skipped_due_to_volume:>6}",
+                f"• Out-of-range expiry:     {skipped_due_to_expiry:>6}",
+                f"• Out-of-range delta:      {skipped_due_to_delta:>6}",
+                f"• Missing IV data:         {skipped_due_to_iv:>6}",
+                "═" * 50
+            ]
+            self.logger.info("\n" + "\n".join(summary_lines) + "\n")
 
+            # Cache the result as dictionaries
+            if processed_options:
+                cache_data = [vars(opt) for opt in processed_options]
+                self._cache_data(cache_data, 'options_chain', **cache_params)
+                self.logger.debug(f"Options chain for {ticker} cached successfully.")
+                return processed_options
+            return None
         except Exception as e:
             self.logger.error(f"Error fetching options chain for {ticker}: {str(e)}")
             return None
@@ -477,20 +567,20 @@ class PolygonDataProvider:
         end_date: Optional[Union[str, datetime, date]] = None,
         adjusted: bool = True
     ) -> Optional[pd.DataFrame]:
-        """
-        Get daily OHLCV bars for a ticker.
-
-        Args:
-            ticker: Stock symbol
-            start_date: Start date
-            end_date: End date (defaults to today)
-            adjusted: Whether to return adjusted prices
-
-        Returns:
-            DataFrame with columns: [open, high, low, close, volume, vwap, returns, realized_vol]
-        """
+        """Get daily OHLCV bars with caching."""
         try:
-            self.logger.debug(f"Fetching daily bars for {ticker}")
+            # Check cache first
+            cache_params = {
+                'ticker': ticker,
+                'start_date': start_date,
+                'end_date': end_date,
+                'adjusted': adjusted
+            }
+            cached_data = self._get_cached_data('daily_bars', **cache_params)
+            if cached_data is not None:
+                return pd.DataFrame(cached_data)
+
+            # If not in cache, fetch from API
             start_date, end_date = self._validate_date_range(start_date, end_date)
 
             aggs = self._retry_with_backoff(
@@ -504,10 +594,9 @@ class PolygonDataProvider:
             )
 
             if not aggs:
-                self.logger.warning(f"No daily bars data for {ticker}")
                 return None
 
-            # Convert to BarData objects for validation
+            # Process the data
             bars = []
             for agg in aggs:
                 try:
@@ -538,6 +627,9 @@ class PolygonDataProvider:
             df['returns'] = df['close'].pct_change()
             df['realized_vol'] = df['returns'].rolling(window=20).std() * np.sqrt(252)
 
+            # Cache the result
+            self._cache_data(df.to_dict(), 'daily_bars', **cache_params)
+
             return df
 
         except Exception as e:
@@ -545,15 +637,15 @@ class PolygonDataProvider:
             return None
 
     def get_intraday_bars(
-            self,
-            ticker: str,
-            start_date: Union[str, datetime, date],
-            end_date: Optional[Union[str, datetime, date]] = None,
-            interval: str = '1min',
-            adjusted: bool = True
-        ) -> Optional[pd.DataFrame]:
+        self,
+        ticker: str,
+        start_date: Union[str, datetime, date],
+        end_date: Optional[Union[str, datetime, date]] = None,
+        interval: str = '1min',
+        adjusted: bool = True
+    ) -> Optional[pd.DataFrame]:
         """
-        Get intraday price bars for a ticker.
+        Get intraday price bars for a ticker with caching.
 
         Args:
             ticker: Stock symbol
@@ -577,14 +669,34 @@ class PolygonDataProvider:
             if interval not in interval_map:
                 raise ValueError(f"Invalid interval: {interval}")
 
+            # Generate cache parameters
+            cache_params = {
+                'ticker': ticker,
+                'start_date': start_date,
+                'end_date': end_date,
+                'interval': interval,
+                'adjusted': adjusted
+            }
+
+            # Check cache first
+            cached_data = self._get_cached_data('intraday_bars', **cache_params)
+            if cached_data is not None:
+                # Reconstruct DataFrame from cached data
+                df = pd.DataFrame(cached_data)
+                if not df.empty:
+                    # Convert index back to datetime
+                    df.index = pd.to_datetime(df.index)
+                    return df
+
             self.logger.debug(f"Fetching {interval} bars for {ticker}")
             start_date, end_date = self._validate_date_range(start_date, end_date)
 
+            multiplier = interval.split('min')[0] if 'min' in interval else '1'
             aggs = self._retry_with_backoff(
                 self.client.list_aggs,
                 ticker,
                 interval_map[interval],
-                interval.split('min')[0] if 'min' in interval else '1',
+                multiplier,
                 start_date,
                 end_date,
                 adjusted=adjusted
@@ -625,98 +737,16 @@ class PolygonDataProvider:
             df['regular_session'] = df.index.map(lambda x:
                 self._is_regular_session(x.astimezone(self.eastern_tz)))
 
+            # Cache the result
+            # Convert index to strings for serialization
+            cache_data = df.copy()
+            cache_data.index = cache_data.index.astype(str)
+            self._cache_data(cache_data.to_dict(), 'intraday_bars', **cache_params)
+
             return df
 
         except Exception as e:
             self.logger.error(f"Error fetching intraday bars for {ticker}: {str(e)}")
-            return None
-
-    def get_volatility_surface(
-            self,
-            ticker: str,
-            target_date: datetime,
-            moneyness_range: Tuple[float, float] = (0.7, 1.3)
-        ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """
-        Create a volatility surface from options data for a specific date/time.
-
-        Args:
-            ticker: Stock symbol.
-            target_date: The reference date/time for calculating time to expiry.
-            moneyness_range: Range of moneyness to include (K/S).
-
-        Returns:
-            Tuple of (X, Y, Z) arrays for surface plotting where:
-            X = moneyness grid,
-            Y = time to expiry grid,
-            Z = implied volatility values.
-        """
-        try:
-            self.logger.debug(f"Creating volatility surface for {ticker} based on {target_date}")
-
-            # Ensure target_date is timezone-aware
-            if target_date.tzinfo is None:
-                target_date = target_date.replace(tzinfo=self.utc_tz)
-
-            options_data = self.get_options_chain(ticker)
-            if not options_data:
-                return None
-
-            # Convert to DataFrame for easier processing
-            df: pd.DataFrame = pd.DataFrame([{
-                'strike': opt.strike,
-                'expiration': opt.expiration,
-                'iv': opt.implied_volatility,
-                'underlying_price': opt.underlying_price
-            } for opt in options_data])
-
-            # Ensure 'expiration' is timezone-aware
-            if df['expiration'].dt.tz is None:
-                df['expiration'] = df['expiration'].dt.tz_localize(self.utc_tz)
-
-            # Calculate moneyness and time to expiry relative to target_date
-            df['moneyness'] = df['strike'] / df['underlying_price']
-            df['tte'] = df['expiration'].apply(lambda x: (x - target_date).total_seconds() / (365.0 * 24 * 3600))
-
-            # Filter by moneyness and positive time to expiry
-            df = df.loc[(df['moneyness'].between(*moneyness_range)) & (df['tte'] > 0)]
-
-            if df.empty:
-                self.logger.warning("No valid data points for volatility surface")
-                return None
-
-            # Create grid for surface
-            money_points = np.linspace(df['moneyness'].min(), df['moneyness'].max(), 50)
-            tte_points = np.linspace(df['tte'].min(), df['tte'].max(), 50)
-            X, Y = np.meshgrid(money_points, tte_points)
-
-            # Interpolate implied volatilities
-            moneyness_values = df['moneyness'].to_numpy(dtype=float)
-            tte_values = df['tte'].to_numpy(dtype=float)
-            iv_values = df['iv'].to_numpy(dtype=float)
-
-            Z = griddata(
-                (moneyness_values, tte_values),
-                iv_values,
-                (X, Y),
-                method='cubic',
-                fill_value=np.nan
-            )
-
-            # Fill any remaining NaN values using nearest neighbor
-            mask = np.isnan(Z)
-            if mask.any():
-                Z[mask] = griddata(
-                    (moneyness_values, tte_values),
-                    iv_values,
-                    (X[mask], Y[mask]),
-                    method='nearest'
-                )
-
-            return X, Y, Z
-
-        except Exception as e:
-            self.logger.error(f"Error creating volatility surface for {ticker}: {str(e)}")
             return None
 
     def get_option_chain_stats(
@@ -819,33 +849,43 @@ class PolygonDataProvider:
             return None
 
     def get_historical_volatility(
-            self,
-            ticker: str,
-            start_date: Union[str, datetime, date],
-            end_date: Optional[Union[str, datetime, date]] = None
-        ) -> Optional[pd.DataFrame]:
-            """
-            Calculate historical volatility metrics for a stock.
+        self,
+        ticker: str,
+        start_date: Union[str, datetime, date],
+        end_date: Optional[Union[str, datetime, date]] = None
+    ) -> Optional[pd.DataFrame]:
+        """Get historical volatility metrics with caching."""
+        try:
+            # Check cache first
+            cache_params = {
+                'ticker': ticker,
+                'start_date': start_date,
+                'end_date': end_date
+            }
+            cached_data = self._get_cached_data('historical_volatility', **cache_params)
+            if cached_data is not None:
+                return pd.DataFrame(cached_data)
 
-            Args:
-                ticker: Stock symbol
-                start_date: Start date
-                end_date: End date (defaults to today)
-
-            Returns:
-                DataFrame with columns: [open, high, low, close, volume, vwap, returns, realized_vol, parkinson_vol, garman_klass_vol]
-            """
             df = self.get_daily_bars(ticker, start_date, end_date, adjusted=True)
             if df is None or df.empty:
                 return None
+
+            # Calculate volatility metrics
             df['log_returns'] = np.log(df['close'] / df['close'].shift(1))
             df['realized_vol'] = df['log_returns'].rolling(20).std() * np.sqrt(252)
             df['park_r'] = np.log(df['high']/df['low'])**2
             df['parkinson_vol'] = np.sqrt(df['park_r'].rolling(20).mean()/(4*np.log(2))) * np.sqrt(252)
             df['gk'] = 0.5 * (np.log(df['high']/df['low'])**2) - \
-                       (2*np.log(2)-1)*((np.log(df['close']/df['open']))**2)
+                        (2*np.log(2)-1)*((np.log(df['close']/df['open']))**2)
             df['garman_klass_vol'] = np.sqrt(df['gk'].rolling(20).mean()) * np.sqrt(252)
+
+            # Cache the result
+            self._cache_data(df.to_dict(), 'historical_volatility', **cache_params)
+
             return df
+        except Exception as e:
+                    self.logger.error(f"Error calculating historical volatility for {ticker}: {str(e)}")
+                    return None
 
     def get_market_hours(
         self,

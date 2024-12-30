@@ -1,7 +1,7 @@
 # ancilla/models/option_data.py
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 @dataclass
 class OptionData:
@@ -9,6 +9,7 @@ class OptionData:
     Standardized structure for option contract data.
 
     Attributes:
+        ticker: Ticker symbol of the underlying asset
         strike: Strike price of the option
         expiration: Expiration datetime (timezone-aware)
         contract_type: Type of option ('call' or 'put')
@@ -24,6 +25,7 @@ class OptionData:
         open_interest: Open interest (optional)
         last_trade: Last trade datetime (optional)
     """
+    ticker: str
     strike: float
     expiration: datetime
     contract_type: str
@@ -37,4 +39,4 @@ class OptionData:
     ask: Optional[float] = None
     volume: Optional[int] = None
     open_interest: Optional[int] = None
-    last_trade: Optional[datetime] = None
+    last_trade: Optional[Dict] = None
