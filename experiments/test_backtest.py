@@ -6,6 +6,7 @@ import os
 import dotenv
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
 from ancilla.providers.polygon_data_provider import PolygonDataProvider
@@ -176,7 +177,7 @@ class VolatilityBasedStrategy(Strategy):
         df.reset_index(drop=True, inplace=True)
 
         if len(df) < self.atr_period + 1:
-            return None  # Not enough data
+            raise ValueError(f"Not enough data to calculate ATR for {ticker}")
 
         # Calculate True Range (TR)
         tr = []
@@ -196,15 +197,11 @@ class VolatilityBasedStrategy(Strategy):
         tr = [value for value in tr if not pd.isna(value) and np.isfinite(value)]
 
         if len(tr) < self.atr_period:
-            return None  # Not enough valid TR values
+            raise ValueError(f"Not enough valid TR values to calculate ATR for {ticker}")
 
         # Calculate ATR as the average of TR over the period
         atr = sum(tr[-self.atr_period:]) / self.atr_period
         return atr
-
-    def on_option_data(self, timestamp: datetime, options_data: List[OptionData]) -> None:
-        """Not using options in this strategy."""
-        pass
 
 
 def run_backtest(strategy_class):
@@ -272,8 +269,16 @@ def test_backtest():
     print("Running SimpleTestStrategy Backtest...")
     simple_results = run_backtest(SimpleTestStrategy)
 
+    # plot simple_results['equity_curve']
+    plt.plot(simple_results['equity_curve']['equity'])
+    plt.title('SimpleTestStrategy Equity Curve')
+    plt.xlabel('Time')
+    plt.ylabel('$')
+    plt.show()
+
     print("\nRunning VolatilityBasedStrategy Backtest...")
     volatility_results = run_backtest(VolatilityBasedStrategy)
+
 
 
 if __name__ == "__main__":

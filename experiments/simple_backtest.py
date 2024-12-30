@@ -80,7 +80,6 @@ def test_backtest():
     tickers = ["AAPL", "MSFT"]  # Reduced ticker list for testing
     start_date = datetime(2024, 1, 1, tzinfo=pytz.UTC)
     end_date = datetime(2024, 1, 31, tzinfo=pytz.UTC)  # Shorter test period
-    initial_capital = 100000
 
     # Initialize backtest engine
     engine = BacktestEngine(

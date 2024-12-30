@@ -44,7 +44,7 @@ class MarketSimulator:
         volume = market_data.get('volume', 0)
         high = market_data.get('high', price)
         low = market_data.get('low', price)
-        vwap = market_data.get('vwap', price)
+        # vwap = market_data.get('vwap', price)
 
         # Estimate spread
         spread = (high - low) / price if high > low else 0.001

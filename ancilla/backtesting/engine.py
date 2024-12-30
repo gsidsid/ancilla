@@ -1,4 +1,3 @@
-from ancilla.tests.test_polygon_provider import EST
 # ancilla/backtesting/engine.py
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -173,7 +172,7 @@ class BacktestEngine:
         if quantity == 0:
             return False
 
-        spread = self._estimate_spread(market_data)
+        # spread = self._estimate_spread(market_data)
         base_price = market_data['close']
         price_impact = self.market_simulator.calculate_price_impact(
             base_price,

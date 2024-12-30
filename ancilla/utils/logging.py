@@ -2,9 +2,8 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 from contextlib import contextmanager
-from dataclasses import asdict
 
 from ancilla.models.option_data import OptionData
 

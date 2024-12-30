@@ -1,6 +1,6 @@
 from typing import Optional
 import numpy as np
-from scipy.interpolate import griddata, RBFInterpolator
+from scipy.interpolate import griddata
 
 def create_volatility_surface(
     strikes: np.ndarray,

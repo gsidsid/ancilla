@@ -8,11 +8,10 @@ import pickle
 import hashlib
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional, Union, Dict, Callable
 from functools import wraps
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 class CacheBase:
     """Base class defining the caching interface."""

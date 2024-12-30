@@ -1,6 +1,6 @@
 # ancilla/backtesting/strategy.py
 from datetime import datetime
-from typing import Dict, Optional, Any
+from typing import Dict, Any
 
 from ancilla.providers import PolygonDataProvider
 from ancilla.backtesting.portfolio import Portfolio

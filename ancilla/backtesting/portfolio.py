@@ -1,7 +1,7 @@
 # ancilla/backtesting/portfolio.py
 from datetime import datetime
 from typing import Dict, Optional, List
-from ancilla.models import OptionData, Trade, Position
+from ancilla.models import Trade, Position
 from ancilla.utils.logging import BookLogger
 
 class Portfolio:

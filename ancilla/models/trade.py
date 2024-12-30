@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Any
+from typing import Dict, Any
 
 @dataclass
 class Trade:
