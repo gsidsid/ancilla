@@ -1,5 +1,5 @@
 # experiments/test_backtest.py
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from typing import Dict, Any, List
 import os
@@ -42,11 +42,13 @@ class SimpleTestStrategy(Strategy):
                 self.logger.info(
                     f"Opening position in {ticker}: {shares} shares @ ${data['close']:.2f}"
                 )
-                success = self.portfolio.open_position(
+                success = self.engine.execute_order(
                     ticker=ticker,
                     quantity=shares,
                     price=data['close'],
-                    timestamp=timestamp
+                    timestamp=timestamp,
+                    market_data=market_data,
+                    position_type='stock'
                 )
                 if success:
                     self.entry_prices[ticker] = data['close']

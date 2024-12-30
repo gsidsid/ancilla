@@ -31,6 +31,8 @@ class Portfolio:
             price = (market_prices.get(ticker) if market_prices
                     else position.entry_price)
             multiplier = 100 if position.position_type == 'option' else 1
+            if price is None:
+                continue
             total_value += position.quantity * price * multiplier
         return total_value
 
@@ -45,14 +47,13 @@ class Portfolio:
         price: float,
         timestamp: datetime,
         position_type: str = 'stock',
-        option_data: Optional[OptionData] = None,
         commission: float = 0.0,
         slippage: float = 0.0
     ) -> bool:
         """Open a new position with logging."""
         # Check if position already exists
         if ticker in self.positions:
-            self.logger.warning(f"Position already exists for {ticker}")
+            self.logger.get_logger().warning(f"Position already exists for {ticker}")
             return False
 
         # Calculate total transaction cost including commission and slippage
@@ -61,7 +62,7 @@ class Portfolio:
         total_cost = position_cost + commission + slippage
 
         if total_cost > self.cash:
-            self.logger.warning(
+            self.logger.get_logger().warning(
                 f"Insufficient cash for {ticker}: "
                 f"need ${total_cost:,.2f} (position: ${position_cost:,.2f}, "
                 f"commission: ${commission:,.2f}, slippage: ${slippage:,.2f}), "
@@ -76,7 +77,6 @@ class Portfolio:
             entry_price=price,
             entry_date=timestamp,
             position_type=position_type,
-            option_data=option_data,
             commission=commission,
             slippage=slippage
         )
@@ -91,7 +91,6 @@ class Portfolio:
             quantity=quantity,
             price=price,
             position_type=position_type,
-            option_data=option_data,
             capital=self.cash
         )
 
@@ -115,7 +114,7 @@ class Portfolio:
     ) -> Optional[Trade]:
         """Close a position with logging."""
         if ticker not in self.positions:
-            self.logger.warning(f"No position found for {ticker}")
+            self.logger.get_logger().warning(f"No position found for {ticker}")
             return None
 
         position = self.positions[ticker]
@@ -144,7 +143,6 @@ class Portfolio:
             pnl=net_pnl,
             position_type=position.position_type,
             metadata={
-                'option_data': position.option_data,
                 'entry_commission': position.commission,
                 'entry_slippage': position.slippage,
                 'exit_commission': commission,
@@ -166,12 +164,7 @@ class Portfolio:
             quantity=position.quantity,
             price=price,
             position_type=position.position_type,
-            option_data=position.option_data,
-            cash_remaining=self.cash,
-            commission=commission,
-            slippage=slippage,
-            gross_proceeds=gross_proceeds,
-            net_proceeds=net_proceeds
+            capital=self.cash
         )
 
         self.logger.trade_complete(timestamp, trade)

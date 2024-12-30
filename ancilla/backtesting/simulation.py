@@ -107,6 +107,7 @@ class MarketSimulator:
     def estimate_market_hours_fill_probability(
         self,
         price: float,
+        quantity: int,
         market_data: Dict[str, Any],
         asset_type: str = 'stock'
     ) -> float:
@@ -120,10 +121,13 @@ class MarketSimulator:
 
             # Higher probability if price is within day's range
             normalized_price = (price - low) / (high - low)
-            return max(0, min(1, 1 - abs(0.5 - normalized_price)))
+            if quantity > 0:  # Buy order
+                return max(0, min(1, 1.2 - abs(0.7 - normalized_price)))
+            else:  # Sell order
+                return max(0, min(1, 1.2 - abs(0.3 - normalized_price)))
         else:
             # Options are generally harder to fill
-            return 0.85  # Base fill rate for options
+            return 0.85 if abs(quantity) < 10 else 0.70  # Lower probability for larger option orders
 
     def adjust_for_liquidity(
         self,
@@ -152,3 +156,43 @@ class MarketSimulator:
         """Estimate potential overnight gap risk."""
         # Use 2x ATR as estimate for potential gap
         return current_price * (avg_true_range * 2)
+
+    def calculate_price_impact(
+        self,
+        base_price: float,
+        quantity: int,
+        daily_volume: float,
+        liquidity_score: float
+    ) -> float:
+        """
+        Calculate price impact of order based on size and liquidity.
+        Returns impact as a percentage of price.
+
+        Args:
+            base_price: Current market price
+            quantity: Order quantity (positive for buy, negative for sell)
+            daily_volume: Daily trading volume
+            liquidity_score: Market liquidity score (0-1)
+
+        Returns:
+            Price impact as a decimal (e.g., 0.001 for 0.1% impact)
+        """
+        # Calculate participation rate
+        participation_rate = abs(quantity) / daily_volume if daily_volume > 0 else 1
+
+        # Base impact from order size
+        volume_impact = (participation_rate ** 0.5) * self.slippage_config.market_impact
+
+        # Adjust for liquidity - less liquid markets have higher impact
+        liquidity_adjustment = (1.5 - liquidity_score)  # ranges from 0.5 to 1.5
+
+        # Apply direction
+        direction = 1 if quantity > 0 else -1
+
+        # Combine components
+        total_impact = (
+            volume_impact * liquidity_adjustment +
+            self.slippage_config.base_points / 10000  # Base impact in decimal
+        ) * direction
+
+        return total_impact

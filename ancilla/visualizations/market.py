@@ -226,7 +226,7 @@ class MarketVisualizer:
             date_range = [
                 start_date + timedelta(days=x)
                 for x in range((end_date - start_date).days + 1)
-            ]
+            ] # type: ignore
 
             tte_min = min_days
             tte_max = max_days
@@ -555,14 +555,15 @@ class MarketVisualizer:
                     )
 
             # Add current price line
-            current_price = df['underlying_price'].iloc[0]
+            current_price = df['underlying_price'].iloc[0]  # type: ignore
             self.logger.debug(f"Adding reference line at current price: {current_price}")
             for i in range(n_rows):
                 fig.add_vline(
                     x=current_price,
                     line_dash="dash",
                     line_color="gray",
-                    row=i+1, col=1
+                    row=i+1, # type: ignore
+                    col=1 # type: ignore
                 )
 
             fig.update_layout(
@@ -806,7 +807,7 @@ class MarketVisualizer:
             )
 
             # Open interest distribution
-            if 'open_interest' in df.columns and df['open_interest'].notna().any():
+            if ('open_interest' in df.columns) and (df['open_interest'].notna().any() is True):
                 fig.add_trace(
                     go.Histogram2d(
                         x=df['strike'],

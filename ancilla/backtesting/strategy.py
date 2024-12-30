@@ -6,19 +6,25 @@ from ancilla.providers import PolygonDataProvider
 from ancilla.backtesting.portfolio import Portfolio
 from ancilla.utils.logging import StrategyLogger
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ancilla.backtesting.engine import BacktestEngine
+
 class Strategy:
     """Base class for implementing trading strategies."""
 
     def __init__(self, data_provider: PolygonDataProvider, name: str = "Untitled Strategy"):
-        self.data_provider = data_provider
-        self.portfolio: Optional[Portfolio] = None
         self.name = name
+        self.data_provider = data_provider
+        self.portfolio: Portfolio;
+        self.engine: BacktestEngine;
         self.logger = StrategyLogger(name).get_logger()
         self.logger.info("Starting strategy: %s", name)
 
-    def initialize(self, portfolio: Portfolio):
+    def initialize(self, portfolio: Portfolio, engine: "BacktestEngine") -> None:
         """Initialize the strategy with a portfolio."""
         self.portfolio = portfolio
+        self.engine = engine
 
     def on_data(self, timestamp: datetime, market_data: Dict[str, Any]) -> None:
         """

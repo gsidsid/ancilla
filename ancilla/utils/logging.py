@@ -143,8 +143,10 @@ class BookLogger(BaseLogger):
 
     def position_open(self, timestamp: datetime, ticker: str, quantity: int,
                             price: float, position_type: str,
-                            option_data: Optional[OptionData], capital: float):
+                            capital: float):
         """Log opening a new position."""
+        if self.logger is None:
+            raise ValueError("Logger not initialized")
         self.logger.debug(self.position_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
             ticker=ticker,
@@ -155,13 +157,13 @@ class BookLogger(BaseLogger):
             capital=capital
         ))
 
-        if option_data:
-            self.log_option_data(timestamp, option_data)
-
     def position_close(self, timestamp: datetime, ticker: str, quantity: int,
                             price: float, position_type: str,
-                            option_data: Optional[OptionData], capital: float):
+                            capital: float):
         """Log closing a position."""
+        if self.logger is None:
+            raise ValueError("Logger not initialized")
+
         self.logger.debug(self.position_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
             ticker=ticker,
@@ -172,11 +174,10 @@ class BookLogger(BaseLogger):
             capital=capital
         ))
 
-        if option_data:
-            self.log_option_data(timestamp, option_data)
-
     def trade_complete(self, timestamp: datetime, trade: Any):
         """Log completed trade details."""
+        if self.logger is None:
+            raise ValueError("Logger not initialized")
         self.logger.debug(self.trade_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
             ticker=trade.ticker,
@@ -190,6 +191,8 @@ class BookLogger(BaseLogger):
     def capital_update(self, timestamp: datetime, cash: float,
                             position_value: float, total_value: float):
         """Log capital changes."""
+        if self.logger is None:
+            raise ValueError("Logger not initialized")
         self.logger.debug(self.capital_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
             cash=cash,
@@ -199,6 +202,8 @@ class BookLogger(BaseLogger):
 
     def option_data(self, timestamp: datetime, option: OptionData):
         """Log option contract details."""
+        if self.logger is None:
+            raise ValueError("Logger not initialized")
         self.logger.debug(self.option_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
             ticker=option.ticker,

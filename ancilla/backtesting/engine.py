@@ -1,3 +1,4 @@
+from ancilla.tests.test_polygon_provider import EST
 # ancilla/backtesting/engine.py
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -34,6 +35,7 @@ class BacktestEngine:
         slippage_config: Optional[SlippageConfig] = None,
         name: str = "backtesting"
     ):
+        self.initial_capital = initial_capital
         self.data_provider = data_provider
         self.strategy = strategy
         # Generate portfolio name from strategy name and timestamp
@@ -57,7 +59,7 @@ class BacktestEngine:
         self.commission_costs = []  # Track commissions
 
         # Initialize strategy
-        self.strategy.initialize(self.portfolio)
+        self.strategy.initialize(self.portfolio, self)
         self.logger = BacktesterLogger().get_logger()
 
         # Cache for daily metrics
@@ -104,7 +106,7 @@ class BacktestEngine:
                 tr3 = abs(low - close.shift(1))
 
                 tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                atr = tr.rolling(window=window).mean().iloc[-1]
+                atr = pd.Series(tr).rolling(window=window).mean()
                 self._atr_cache[cache_key] = atr
             else:
                 self._atr_cache[cache_key] = None
@@ -147,84 +149,86 @@ class BacktestEngine:
         position_type: str = 'stock',
         option_data: Optional[OptionData] = None
     ) -> bool:
-        """Execute order with full market simulation."""
-        # Check if we have sufficient market data
+        market_data = market_data[ticker]
+
         if not market_data:
             self.logger.warning(f"Insufficient market data for {ticker}")
             return False
 
-        # Adjust quantity for liquidity
-        adjusted_quantity = self.market_simulator.adjust_for_liquidity(
-            quantity, market_data, position_type
-        )
+        liquidity_score = self._calculate_liquidity_score(market_data)
 
-        if adjusted_quantity != quantity:
-            self.logger.warning(
-                f"Order size adjusted for liquidity: {quantity} -> {adjusted_quantity} "
-                f"({ticker})"
-            )
-            if adjusted_quantity == 0:
-                return False
-
-        # Calculate execution price with slippage
-        direction = 1 if quantity > 0 else -1
-        execution_price = self.market_simulator.calculate_execution_price(
-            ticker, price, adjusted_quantity, market_data, direction, position_type
-        )
-
-        # Calculate commission
-        commission = self.market_simulator.calculate_commission(
-            execution_price, adjusted_quantity, position_type
-        )
-
-        # Check fill probability
-        fill_probability = self.market_simulator.estimate_market_hours_fill_probability(
-            execution_price, market_data, position_type
-        )
-
-        # Adjust fill probability based on liquidity score
-        liquidity_score = market_data.get('liquidity_score', 1.0)
-        fill_probability *= liquidity_score
-
-        # Simulate fill
-        if np.random.random() > fill_probability:
-            self.logger.warning(
-                f"Order failed to fill: {ticker} {adjusted_quantity} @ {price:.2f} "
-                f"(fill probability: {fill_probability:.2%})"
-            )
-            self.fill_ratios.append(0.0)
+        if liquidity_score < 0.1:
+            self.logger.warning(f"Insufficient liquidity for {ticker}")
             return False
 
-        # Track costs
-        slippage = abs(execution_price - price) / price
-        self.slippage_costs.append(slippage * abs(adjusted_quantity * execution_price))
-        self.commission_costs.append(commission)
-        self.fill_ratios.append(1.0)
+        daily_volume = market_data.get('volume', 0)
+        participation_rate = abs(quantity) / daily_volume if daily_volume > 0 else 1
+        if participation_rate > 0.1:
+            adjusted_quantity = int(0.1 * daily_volume) * (1 if quantity > 0 else -1)
+            self.logger.warning(
+                f"Order size adjusted for liquidity: {quantity} -> {adjusted_quantity}"
+            )
+            quantity = adjusted_quantity
 
-        # Execute the trade
+        if quantity == 0:
+            return False
+
+        spread = self._estimate_spread(market_data)
+        base_price = market_data['close']
+        price_impact = self.market_simulator.calculate_price_impact(
+            base_price,
+            quantity,
+            daily_volume,
+            liquidity_score
+        )
+        execution_price = round(base_price * (1 + price_impact), 2)
+        commission = self.market_simulator.calculate_commission(
+            execution_price,
+            quantity,
+            position_type
+        )
+        fill_probability = self.market_simulator.estimate_market_hours_fill_probability(
+            execution_price,
+            quantity,
+            market_data,
+            position_type
+        )
+
+        if np.random.random() > fill_probability:
+            self.logger.warning(
+                f"Order failed to fill: {ticker} {quantity} @ {execution_price:.2f} "
+                f"(fill probability: {fill_probability:.2%})"
+            )
+            return False
+
         success = self.portfolio.open_position(
             ticker=ticker,
-            quantity=adjusted_quantity,
+            quantity=quantity,
             price=execution_price,
             timestamp=timestamp,
             position_type=position_type,
-            option_data=option_data,
-            commission=commission
+            commission=commission,
+            slippage=abs(execution_price - base_price) * abs(quantity)
         )
 
         if success:
-            price_impact = (execution_price - price) / price
-            self.logger.info(
-                f"Order executed: {ticker} {adjusted_quantity} @ {execution_price:.2f} "
-                f"(slippage: {price_impact:.2%}, commission: ${commission:.2f})"
-            )
-
-            # Update daily metrics
-            self.daily_metrics['slippage'].append(slippage)
-            self.daily_metrics['commissions'].append(commission)
+            # Track daily metrics (existing logic)
+            self.daily_metrics['volume_participation'].append(participation_rate)
             self.daily_metrics['fills'].append(1.0)
-            self.daily_metrics['volume_participation'].append(
-                abs(adjusted_quantity) / market_data.get('volume', 1)
+            self.daily_metrics['slippage'].append(price_impact)
+            self.daily_metrics['commissions'].append(commission)
+
+            # Track total metrics for final reporting
+            self.fill_ratios.append(fill_probability)
+            self.slippage_costs.append(abs(execution_price - base_price) * abs(quantity))
+            self.commission_costs.append(commission)
+
+            print(
+                f"Order executed: {ticker} {quantity} @ {execution_price:.2f}\n"
+                f"  Base price: ${base_price:.2f}\n"
+                f"  Impact: {price_impact:.2%}\n"
+                f"  Commission: ${commission:.2f}\n"
+                f"  Volume participation: {participation_rate:.2%}"
             )
 
         return success
@@ -273,6 +277,22 @@ class BacktestEngine:
 
             current_date += timedelta(days=1)
 
+
+        # Close any remaining positions at the end of the backtest
+        positions_to_close = list(self.portfolio.positions.items())
+        for ticker, position in positions_to_close:
+            market_data = self._get_market_data(ticker, current_date)
+            if market_data:
+                success = self.portfolio.close_position(
+                    ticker=ticker,
+                    price=market_data['close'],
+                    timestamp=current_date
+                )
+                if success:
+                    self.logger.info(
+                        f"Closed remaining position in {ticker} @ {market_data['close']:.2f}"
+                    )
+
         # Calculate and return performance metrics
         metrics = self._calculate_results()
         self._log_summary(metrics)
@@ -280,10 +300,13 @@ class BacktestEngine:
 
     def _calculate_results(self) -> Dict[str, Any]:
         """Calculate comprehensive backtest results."""
-        equity_df = pd.DataFrame(
-            self.portfolio.equity_curve,
-            columns=['timestamp', 'equity']
-        ).set_index('timestamp')
+        # Convert equity curve to dataframe with proper column names
+        equity_curve_dict = {'timestamp': [], 'equity': []}
+        for timestamp, equity in self.portfolio.equity_curve:
+            equity_curve_dict['timestamp'].append(timestamp)
+            equity_curve_dict['equity'].append(equity)
+
+        equity_df = pd.DataFrame.from_dict(equity_curve_dict).set_index('timestamp')
 
         equity_df['returns'] = equity_df['equity'].pct_change()
 
@@ -308,8 +331,8 @@ class BacktestEngine:
         avg_fill_ratio = np.mean(self.fill_ratios) if self.fill_ratios else 0
 
         # Separate options and stock trades
-        options_trades = [t for t in self.portfolio.trades if t.option_data]
-        stock_trades = [t for t in self.portfolio.trades if not t.option_data]
+        options_trades = [t for t in self.portfolio.trades if t.position_type == 'option']
+        stock_trades = [t for t in self.portfolio.trades if not t.position_type == 'option']
 
         # Calculate trade metrics
         def calculate_trade_metrics(trades):
@@ -337,7 +360,7 @@ class BacktestEngine:
                 'win_rate': len(wins) / len(trades),
                 'avg_pnl': np.mean([t.pnl for t in trades]),
                 'total_pnl': sum(t.pnl for t in trades),
-                'total_commission': sum(t.commission for t in trades),
+                'total_commission': total_commission,
                 'avg_holding_period': np.mean(holding_periods),
                 'profit_factor': (
                     abs(sum(t.pnl for t in wins)) /
@@ -356,7 +379,7 @@ class BacktestEngine:
 
         # Compile results
         results = {
-            'initial_capital': equity_df['equity'].iloc[0],
+            'initial_capital': self.initial_capital,
             'final_capital': equity_df['equity'].iloc[-1],
             'total_return': total_return,
             'annualized_return': annualized_return,
@@ -377,8 +400,8 @@ class BacktestEngine:
                     if self.portfolio.trades else 0
                 ),
                 'cost_as_pct_aum': (
-                    (total_commission + total_slippage) / equity_df['equity'].iloc[0]
-                    if equity_df['equity'].iloc[0] > 0 else 0
+                    (total_commission + total_slippage) / self.initial_capital
+                    if self.initial_capital > 0 else 0
                 )
             },
             'execution_metrics': {
@@ -396,11 +419,12 @@ class BacktestEngine:
         }
 
         # Add risk analysis metrics
-        results.update(self._calculate_risk_metrics(daily_returns))
+        # ensure daily_returns is not empty
+        results.update({k: v for k, v in self._calculate_risk_metrics(daily_returns).items()})
 
         return results
 
-    def _calculate_risk_metrics(self, daily_returns: pd.Series) -> Dict[str, Any]:
+    def _calculate_risk_metrics(self, daily_returns) -> Dict[str, Any]:
         """Calculate additional risk metrics."""
         if daily_returns.empty:
             return {

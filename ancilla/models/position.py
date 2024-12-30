@@ -11,7 +11,6 @@ class Position:
     entry_price: float
     entry_date: datetime
     position_type: str  # 'option' or 'stock'
-    option_data: Optional[OptionData] = None
     commission: float = 0.0
     slippage: float = 0.0
     margin_requirement: float = 0.0  # For future margin tracking
