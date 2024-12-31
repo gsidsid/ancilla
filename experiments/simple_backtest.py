@@ -42,13 +42,11 @@ class SimpleTestStrategy(Strategy):
                 self.logger.info(
                     f"Opening position in {ticker}: {shares} shares @ ${data['close']:.2f}"
                 )
-                success = self.engine.execute_order(
+                success = self.engine.buy_stock(
                     ticker=ticker,
                     quantity=shares,
-                    price=data['close'],
                     timestamp=timestamp,
-                    market_data=market_data,
-                    position_type='stock'
+                    market_data=market_data
                 )
                 if success:
                     self.entry_prices[ticker] = data['close']
@@ -105,6 +103,10 @@ def test_backtest():
 
     # Run backtest
     results = engine.run()
+
+    # Plot results
+    fig = results.plot_equity_curve(include_drawdown=True)
+    fig.show()
 
     return results
 

@@ -488,7 +488,8 @@ class BacktestEngine:
                     self.strategy.logger.handlers[0].setFormatter(strategyCurrentTimeFormatter)
                     self.strategy.logger.handlers[1].setFormatter(strategyCurrentTimeFormatter)
 
-                    # self.logger.info(f"{current_time}")
+                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + current_time.strftime('%Y-%m-%d %H:%M:%S') + "]" + "\033[K"
+                    print(current_line, end='\r')
                     self.strategy.on_data(current_time, market_data)
 
                     # Update portfolio equity curve
@@ -548,9 +549,6 @@ class BacktestEngine:
             daily_returns=metrics['daily_returns'],
             trades=self.portfolio.trades
         )
-
-        print(self.portfolio.trades)
-        print(self)
 
         # Log summary
         self.logger.info("\n" + results.summarize())

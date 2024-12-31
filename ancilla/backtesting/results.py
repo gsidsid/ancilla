@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from ancilla.backtesting.instruments import InstrumentType
 
@@ -52,44 +53,208 @@ class BacktestResults:
         return wins / len(self.trades)
 
     def plot_equity_curve(self, include_drawdown: bool = True) -> go.Figure:
-        """Plot equity curve with optional drawdown overlay."""
-        fig = go.Figure()
+        """
+        Plot equity curve with optional drawdown overlay, trade annotations,
+        and current holdings in the hover tooltip.
+        """
+        # Create a figure with secondary y-axis for drawdown
+        fig = make_subplots(specs=[[{"secondary_y": include_drawdown}]])
 
         # Add equity curve
-        fig.add_trace(go.Scatter(
-            x=self.equity_curve.index,
-            y=self.equity_curve['equity'],
-            name='Portfolio Value',
-            line=dict(color='blue')
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=self.equity_curve.index,
+                y=self.equity_curve['equity'],
+                name='Portfolio Value',
+                line=dict(color='blue', width=2),
+                hoverinfo='text',
+                hovertext=self._generate_hover_text()
+            ),
+            secondary_y=False,
+        )
 
+        # Add drawdown if requested
         if include_drawdown:
-            # Add drawdown on secondary y-axis
-            fig.add_trace(go.Scatter(
-                x=self.drawdown_series.index,
-                y=self.drawdown_series * 100,  # Convert to percentage
-                name='Drawdown %',
-                yaxis='y2',
-                line=dict(color='red')
-            ))
-
-            fig.update_layout(
-                yaxis2=dict(
-                    title='Drawdown %',
-                    overlaying='y',
-                    side='right',
-                    range=[0, max(abs(self.drawdown_series * 100))]
-                )
+            fig.add_trace(
+                go.Scatter(
+                    x=self.drawdown_series.index,
+                    y=self.drawdown_series * 100,  # Convert to percentage
+                    name='Drawdown %',
+                    line=dict(color='red', width=2, dash='dash'),
+                    hoverinfo='text',
+                    hovertext=self._generate_drawdown_hover_text()
+                ),
+                secondary_y=True,
+            )
+            fig.update_yaxes(
+                title_text="Drawdown (%)",
+                secondary_y=True,
+                showgrid=False,
+                range=[min(self.drawdown_series * 100) * 1.1, 0]
             )
 
+        # Annotate trades
+        trade_traces = self._create_trade_traces()
+        for trade_trace in trade_traces:
+            fig.add_trace(trade_trace, secondary_y=False)
+
+        # Update layout with enhanced styling
         fig.update_layout(
-            title='Portfolio Equity Curve',
+            title={
+                'text': "Portfolio Equity Curve",
+                'y':0.95,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top'},
             xaxis_title='Date',
             yaxis_title='Portfolio Value ($)',
-            hovermode='x unified'
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified',
+            template='plotly_dark',  # Choose a professional template
+            margin=dict(l=50, r=50, t=80, b=50)
+        )
+
+        # Update y-axis for equity curve
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor='gray',
+            gridwidth=0.5,
+            zeroline=False,
+            secondary_y=False
         )
 
         return fig
+
+    def _create_trade_traces(self) -> List[go.Scatter]:
+        """
+        Create Plotly scatter traces for trades, differentiating between
+        stock and option trades and buy/sell actions.
+        """
+        trade_traces = []
+        for trade in self.trades:
+            trade_time = trade.entry_time
+            trade_type = 'Option' if trade.instrument.is_option else 'Stock'
+            action = 'Buy' if trade.quantity > 0 else 'Sell'
+            color = 'green' if action == 'Buy' else 'red'
+            symbol = 'triangle-up' if action == 'Buy' else 'triangle-down'
+            size = 10
+
+            # Adjust symbol based on instrument type
+            if trade.instrument.is_option:
+                symbol = 'diamond' if action == 'Buy' else 'cross'
+
+            trade_traces.append(
+                go.Scatter(
+                    x=[trade_time],
+                    y=[self.equity_curve.loc[trade_time, 'equity']],
+                    mode='markers',
+                    marker=dict(
+                        symbol=symbol,
+                        size=size,
+                        color=color,
+                        line=dict(width=1, color='black')
+                    ),
+                    name=f"{trade_type} {action}",
+                    hoverinfo='text',
+                    hovertext=self._generate_trade_hover_text(trade)
+                )
+            )
+        return trade_traces
+
+    def _generate_hover_text(self) -> List[str]:
+        """
+        Generate hover text for equity curve points, including current holdings.
+        """
+        hover_texts = []
+        holdings = self._compute_holdings_over_time()
+        for date, equity in self.equity_curve['equity'].items():
+            holding_info = holdings.get(date, {})
+            holdings_str = self._format_holdings(holding_info)
+            hover_text = f"Date: {date.strftime('%Y-%m-%d')}<br>" \
+                            f"Equity: ${equity:,.2f}<br>" \
+                            f"Holdings:<br>{holdings_str}"
+            hover_texts.append(hover_text)
+        return hover_texts
+
+    def _generate_drawdown_hover_text(self) -> List[str]:
+        """
+        Generate hover text for drawdown points.
+        """
+        hover_texts = []
+        for date, drawdown in self.drawdown_series.items():
+            hover_text = f"Date: {date.strftime('%Y-%m-%d')}<br>" \
+                            f"Drawdown: {drawdown:.2f}%"
+            hover_texts.append(hover_text)
+        return hover_texts
+
+    def _generate_trade_hover_text(self, trade: Any) -> str:
+        """
+        Generate hover text for individual trades.
+        """
+        trade_info = (
+            f"Trade Type: {'Option' if trade.instrument.is_option else 'Stock'}<br>"
+            f"Action: {'Buy' if trade.quantity > 0 else 'Sell'}<br>"
+            f"Ticker: {trade.instrument.ticker}<br>"
+            f"Quantity: {trade.quantity}<br>"
+            f"Price: ${trade.entry_price:,.2f}<br>"
+            f"P&L: ${trade.pnl:,.2f}"
+        )
+        return trade_info
+
+    def _compute_holdings_over_time(self) -> Dict[pd.Timestamp, Dict[str, Any]]:
+        """
+        Compute current holdings at each date in the equity curve.
+        Returns a dictionary mapping dates to holdings.
+        """
+        holdings = {}
+        current_holdings = {}
+        sorted_trades = sorted(self.trades, key=lambda t: t.entry_time)
+        equity_dates = self.equity_curve.index
+
+        trade_idx = 0
+        num_trades = len(sorted_trades)
+
+        for date in equity_dates:
+            # Process all trades up to the current date
+            while trade_idx < num_trades and sorted_trades[trade_idx].entry_time <= date:
+                trade = sorted_trades[trade_idx]
+                ticker = trade.instrument.ticker
+                if ticker not in current_holdings:
+                    current_holdings[ticker] = {'quantity': 0, 'instrument': trade.instrument}
+                current_holdings[ticker]['quantity'] += trade.quantity
+                # Remove the holding if quantity is zero
+                if current_holdings[ticker]['quantity'] == 0:
+                    del current_holdings[ticker]
+                trade_idx += 1
+            # Record current holdings
+            holdings[date] = current_holdings.copy()
+        return holdings
+
+    def _format_holdings(self, holdings: Dict[str, Any]) -> str:
+        """
+        Format holdings dictionary into a readable string for hover text.
+        """
+        if not holdings:
+            return "None"
+        holdings_str = ""
+        for ticker, info in holdings.items():
+            instrument = info['instrument']
+            quantity = info['quantity']
+            if instrument.is_option:
+                option_type = instrument.instrument_type.value
+                strike = instrument.strike
+                expiration = instrument.expiration.strftime('%Y-%m-%d')
+                holdings_str += f"{ticker}: {quantity} {option_type} @ ${strike} Exp: {expiration}<br>"
+            else:
+                holdings_str += f"{ticker}: {quantity} shares<br>"
+        return holdings_str
+
 
     def analyze_options_performance(self) -> pd.DataFrame:
         """

@@ -245,7 +245,7 @@ def test_covered_call_strategy():
     # Set up test parameters for Q4 2023
     tickers = ["AAPL"]  # Test with a liquid stock
     start_date = datetime(2023, 10, 1, tzinfo=pytz.UTC)
-    end_date = datetime(2023, 11, 30, tzinfo=pytz.UTC)
+    end_date = datetime(2023, 12, 30, tzinfo=pytz.UTC)
     initial_capital = 100000
 
     # Initialize backtest engine
