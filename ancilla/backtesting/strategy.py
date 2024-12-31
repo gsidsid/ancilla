@@ -18,13 +18,13 @@ class Strategy:
         self.data_provider = data_provider
         self.portfolio: Portfolio;
         self.engine: BacktestEngine;
-        self.logger = StrategyLogger(name).get_logger()
-        self.logger.info("Starting strategy: %s", name)
 
     def initialize(self, portfolio: Portfolio, engine: "BacktestEngine") -> None:
         """Initialize the strategy with a portfolio."""
         self.portfolio = portfolio
         self.engine = engine
+        self.logger = StrategyLogger(self.name).get_logger()
+        self.logger.info("Starting strategy: %s", self.name)
 
     def on_data(self, timestamp: datetime, market_data: Dict[str, Any]) -> None:
         """

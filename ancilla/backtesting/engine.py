@@ -1,23 +1,26 @@
+from audioop import add
 # ancilla/backtesting/engine.py
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 import numpy as np
 import pandas as pd
+import pytz
+import logging
 
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
 from ancilla.utils.logging import BacktesterLogger
+from ancilla.models import Trade
+from ancilla.providers.polygon_data_provider import PolygonDataProvider
+from ancilla.backtesting.instruments import Instrument, Option, Stock, InstrumentType
+from ancilla.backtesting.results import BacktestResults
 from ancilla.backtesting.strategy import Strategy
 from ancilla.backtesting.portfolio import Portfolio
-from ancilla.models import OptionData
 from ancilla.backtesting.simulation import (
     MarketSimulator, CommissionConfig, SlippageConfig
 )
-
-def format_option_ticker(ticker: str, expiry: datetime, strike: float, opt_type: str) -> str:
-    """Format option ticker for Polygon API."""
-    exp_str = expiry.strftime('%y%m%d')
-    strike_str = f"{strike:08.0f}"
-    return f"O:{ticker}{exp_str}{opt_type}{strike_str}"
+from ancilla.formulae.metrics import (
+    calculate_return_metrics, calculate_drawdown_metrics, calculate_risk_metrics,
+    calculate_trade_metrics
+)
 
 class BacktestEngine:
     """Main backtesting engine with realistic market simulation."""
@@ -138,31 +141,45 @@ class BacktestEngine:
             return 0.0
         return min(1.0, np.log10(dollar_volume) / 7.0)  # 7.0 ~ $10M daily volume
 
-    def execute_order(
+    def _execute_instrument_order(
         self,
-        ticker: str,
+        instrument: Instrument,
         quantity: int,
-        price: float,
         timestamp: datetime,
         market_data: Dict[str, Any],
-        position_type: str = 'stock',
-        option_data: Optional[OptionData] = None
+        is_assignment: bool = False
     ) -> bool:
-        market_data = market_data[ticker]
+        """
+        Internal method to execute orders for any instrument type.
 
-        if not market_data:
-            self.logger.warning(f"Insufficient market data for {ticker}")
+        Args:
+            instrument: Instrument to trade
+            quantity: Order quantity (positive for buy, negative for sell)
+            timestamp: Current timestamp
+            market_data: Market data dictionary
+        """
+        if not market_data or instrument.underlying_ticker not in market_data:
+            self.logger.warning(f"Insufficient market data for underlying {instrument.underlying_ticker}")
             return False
 
-        liquidity_score = self._calculate_liquidity_score(market_data)
+        market_data_ticker = market_data[instrument.underlying_ticker]
 
+        # Get current price/target price to execute with
+        price = market_data_ticker.get('close', 0)
+        if price is None:
+            self.logger.warning(f"No price data for {instrument.ticker}")
+            return False
+
+        # Calculate liquidity score
+        liquidity_score = self._calculate_liquidity_score(market_data_ticker)
         if liquidity_score < 0.1:
-            self.logger.warning(f"Insufficient liquidity for {ticker}")
+            self.logger.warning(f"Insufficient liquidity for {instrument.ticker}")
             return False
 
-        daily_volume = market_data.get('volume', 0)
+        # Adjust quantity for volume
+        daily_volume = market_data_ticker.get('volume', 0)
         participation_rate = abs(quantity) / daily_volume if daily_volume > 0 else 1
-        if participation_rate > 0.1:
+        if participation_rate > 0.1:  # Limit to 10% of daily volume
             adjusted_quantity = int(0.1 * daily_volume) * (1 if quantity > 0 else -1)
             self.logger.warning(
                 f"Order size adjusted for liquidity: {quantity} -> {adjusted_quantity}"
@@ -172,59 +189,128 @@ class BacktestEngine:
         if quantity == 0:
             return False
 
-        # spread = self._estimate_spread(market_data)
-        base_price = market_data['close']
+        # Calculate execution details
         price_impact = self.market_simulator.calculate_price_impact(
-            base_price,
+            price,
             quantity,
             daily_volume,
             liquidity_score
         )
-        execution_price = round(base_price * (1 + price_impact), 2)
+
+        execution_price = round(price * (1 + price_impact), 2)
         commission = self.market_simulator.calculate_commission(
             execution_price,
             quantity,
-            position_type
+            'option' if instrument.is_option else 'stock'
         )
+
         fill_probability = self.market_simulator.estimate_market_hours_fill_probability(
             execution_price,
             quantity,
-            market_data,
-            position_type
+            market_data_ticker,
+            'option' if instrument.is_option else 'stock'
         )
+        if is_assignment:
+            fill_probability = 1.0 # Assume assignment always fills
 
+        # Check if order fills
         if np.random.random() > fill_probability:
             self.logger.warning(
-                f"Order failed to fill: {ticker} {quantity} @ {execution_price:.2f} "
+                f"Order failed to fill: {instrument.ticker} {quantity} @ {execution_price:.2f} "
                 f"(fill probability: {fill_probability:.2%})"
             )
             return False
 
-        success = self.portfolio.open_position(
-            ticker=ticker,
-            quantity=quantity,
-            price=execution_price,
-            timestamp=timestamp,
-            position_type=position_type,
-            commission=commission,
-            slippage=abs(execution_price - base_price) * abs(quantity)
-        )
+        # Calculate total transaction costs
+        slippage = abs(execution_price - price) * abs(quantity)
+        total_transaction_costs = commission + slippage
+
+        # Execute the order based on whether it's opening or closing a position
+        success = False
+        if quantity > 0:  # Buying
+            if instrument.is_option:
+                option_ticker = instrument.format_option_ticker()
+                if option_ticker in self.portfolio.positions:
+                    # Buying to close a short option position
+                    position = self.portfolio.positions[option_ticker]
+                    initial_premium = abs(position.quantity) * position.entry_price * instrument.get_multiplier()
+                    buyback_cost = abs(quantity) * execution_price * instrument.get_multiplier()
+                    realized_pnl = initial_premium - buyback_cost - total_transaction_costs
+
+                    success = self.portfolio.close_position(
+                        instrument=position.instrument,
+                        price=execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=total_transaction_costs,
+                        realized_pnl=realized_pnl
+                    )
+                else:
+                    # Opening a new long option position
+                    success = self.portfolio.open_position(
+                        instrument=instrument,
+                        quantity=quantity,
+                        price=execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=total_transaction_costs
+                    )
+            else:
+                # Opening a new stock position
+                success = self.portfolio.open_position(
+                    instrument=instrument,
+                    quantity=quantity,
+                    price=execution_price,
+                    timestamp=timestamp,
+                    transaction_costs=total_transaction_costs
+                )
+        else:  # Selling
+            if instrument.is_option:
+                option_ticker = instrument.format_option_ticker()
+                if option_ticker in self.portfolio.positions:
+                    # Selling to close a long option position
+                    position = self.portfolio.positions[option_ticker]
+                    realized_pnl = (execution_price - position.entry_price) * position.quantity * instrument.get_multiplier() - total_transaction_costs
+
+                    success = self.portfolio.close_position(
+                        instrument=position.instrument,
+                        price=execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=total_transaction_costs,
+                        realized_pnl=realized_pnl
+                    )
+                else:
+                    # Opening a new short option position
+                    success = self.portfolio.open_position(
+                        instrument=instrument,
+                        quantity=quantity,
+                        price=execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=total_transaction_costs
+                    )
+            else:
+                # Closing a stock position
+                if instrument.ticker in self.portfolio.positions:
+                    success = self.portfolio.close_position(
+                        instrument=self.portfolio.positions[instrument.ticker].instrument,
+                        price=execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=total_transaction_costs
+                    )
 
         if success:
-            # Track daily metrics (existing logic)
+            # Track metrics
             self.daily_metrics['volume_participation'].append(participation_rate)
             self.daily_metrics['fills'].append(1.0)
             self.daily_metrics['slippage'].append(price_impact)
             self.daily_metrics['commissions'].append(commission)
 
-            # Track total metrics for final reporting
             self.fill_ratios.append(fill_probability)
-            self.slippage_costs.append(abs(execution_price - base_price) * abs(quantity))
+            self.slippage_costs.append(slippage)
             self.commission_costs.append(commission)
 
-            print(
-                f"Order executed: {ticker} {quantity} @ {execution_price:.2f}\n"
-                f"  Base price: ${base_price:.2f}\n"
+            # Log execution
+            self.logger.info(
+                f"Order executed: {instrument.ticker} {quantity} @ {execution_price:.2f}\n"
+                f"  Base price: ${price:.2f}\n"
                 f"  Impact: {price_impact:.2%}\n"
                 f"  Commission: ${commission:.2f}\n"
                 f"  Volume participation: {participation_rate:.2%}"
@@ -232,58 +318,206 @@ class BacktestEngine:
 
         return success
 
-    def run(self) -> Dict[str, Any]:
-        """Run the backtest with market simulation."""
+    def buy_stock(
+        self,
+        ticker: str,
+        quantity: int,
+        timestamp: datetime,
+        market_data: Dict[str, Any],
+        is_assignment: bool = False
+    ) -> bool:
+        """Wrapper for buying stocks."""
+        instrument = Stock(ticker)
+        return self._execute_instrument_order(
+            instrument=instrument,
+            quantity=abs(quantity),  # Ensure positive
+            timestamp=timestamp,
+            market_data=market_data,
+            is_assignment=is_assignment
+        )
+
+    def sell_stock(
+        self,
+        ticker: str,
+        quantity: int,
+        timestamp: datetime,
+        market_data: Dict[str, Any],
+        is_assignment: bool = False
+    ) -> bool:
+        """Wrapper for selling stocks."""
+        instrument = Stock(ticker)
+        return self._execute_instrument_order(
+            instrument=instrument,
+            quantity=-abs(quantity),  # Ensure negative
+            timestamp=timestamp,
+            market_data=market_data,
+            is_assignment=is_assignment
+        )
+
+    def buy_option(
+        self,
+        option: Option,
+        quantity: int,
+        timestamp: datetime,
+        market_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Wrapper for buying options with validation.
+
+        Args:
+            option: Option instrument to trade
+            quantity: Number of contracts
+            timestamp: Current timestamp
+            market_data: Market data dictionary
+        """
+        # Validate option exists and is tradeable
+        if not self._validate_option_order(option, timestamp):
+            return False
+
+        return self._execute_instrument_order(
+            instrument=option,
+            quantity=abs(quantity),
+            timestamp=timestamp,
+            market_data=market_data,
+        )
+
+    def sell_option(
+        self,
+        option: Option,
+        quantity: int,
+        timestamp: datetime,
+        market_data: Dict[str, Any]
+    ) -> bool:
+        """Wrapper for selling options with validation."""
+        if not self._validate_option_order(option, timestamp):
+            return False
+
+        return self._execute_instrument_order(
+            instrument=option,
+            quantity=-abs(quantity),
+            timestamp=timestamp,
+            market_data=market_data
+        )
+
+    def _validate_option_order(self, option: Option, timestamp: datetime) -> bool:
+        """Validate that an option exists and is tradeable."""
+        try:
+            # Get option data using the formatted option ticker
+            option_ticker = option.format_option_ticker()
+
+            # Ensure all datetimes are timezone aware
+            if timestamp.tzinfo is None:
+                timestamp = pytz.UTC.localize(timestamp)
+            if option.expiration.tzinfo is None:
+                option.expiration = pytz.UTC.localize(option.expiration)
+
+            # Check expiration
+            if option.expiration <= timestamp:
+                self.logger.warning(f"Option {option_ticker} is expired")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error validating option order {option.ticker}: {str(e)}")
+            return False
+
+    def run(self) -> BacktestResults:
+        """Run the backtest with hourly resolution and return structured results."""
         current_date = self.start_date
         consecutive_no_data = 0
         max_no_data_days = 5
 
         while current_date <= self.end_date:
-            # Skip non-trading days
-            if not self.data_provider.get_market_hours(current_date):
+            # Check if it's a trading day
+            market_hours = self.data_provider.get_market_hours(current_date)
+            if not market_hours:
                 current_date += timedelta(days=1)
                 continue
 
-            # Get market data
-            market_data = {}
-            has_data = False
+            # Get market open and close times for the day
+            market_open = market_hours['market_open']
+            market_close = market_hours['market_close']
 
-            for ticker in self.tickers:
-                data = self._get_market_data(ticker, current_date)
-                if data:
-                    market_data[ticker] = data
-                    has_data = True
+            # Iterate through each hour of the trading day
+            current_time = market_open
+            while current_time <= market_close:
+                # Get intraday market data for all tickers
+                market_data = {}
+                has_data = False
 
-            if not has_data:
-                consecutive_no_data += 1
-                if consecutive_no_data >= max_no_data_days:
-                    self.logger.warning(
-                        f"No market data for {max_no_data_days} consecutive days "
-                        f"as of {current_date.date()}"
+                # Expand self.tickers to include option tickers for any open positions
+                open_positions = self.portfolio.positions.values()
+                for position in open_positions:
+                    if position.instrument.is_option and position.instrument.format_option_ticker() not in self.tickers:
+                        self.tickers.append(position.instrument.format_option_ticker())
+
+                for ticker in self.tickers:
+                    # Get 1-hour bars for the current hour
+                    bars = self.data_provider.get_intraday_bars(
+                        ticker=ticker,
+                        start_date=current_time,
+                        end_date=current_time + timedelta(hours=1),
+                        interval='1hour'
                     )
+
+                    if bars is not None and not bars.empty:
+                        # Use the last bar's data for the current hour
+                        data = bars.iloc[-1].to_dict()
+                        market_data[ticker] = data
+                        has_data = True
+
+                if not has_data:
+                    consecutive_no_data += 1
+                    if consecutive_no_data >= max_no_data_days * 6.5:  # Adjust for ~6.5 trading hours per day
+                        self.logger.warning(
+                            f"No market data for {max_no_data_days} consecutive days "
+                            f"as of {current_time}"
+                        )
+                        consecutive_no_data = 0
+                else:
                     consecutive_no_data = 0
-            else:
-                consecutive_no_data = 0
 
-            # Process market data in strategy
-            if market_data:
-                self.strategy.on_data(current_date, market_data)
+                    # Process market data in strategy
+                    # Override the strategy logger to include the timestamp
+                    strategyCurrentTimeFormatter = logging.Formatter(
+                        fmt=f"ancilla.{self.strategy.name} - [{
+                            current_time.strftime('%Y-%m-%d %H:%M:%S')
+                        }] - %(levelname)s - %(message)s"
+                    )
+                    self.strategy.logger.handlers[0].setFormatter(strategyCurrentTimeFormatter)
+                    self.strategy.logger.handlers[1].setFormatter(strategyCurrentTimeFormatter)
 
-                # Update portfolio equity curve with current market prices
-                current_prices = {ticker: data['close']
-                                for ticker, data in market_data.items()}
-                self.portfolio.update_equity(current_date, current_prices)
+                    # self.logger.info(f"{current_time}")
+                    self.strategy.on_data(current_time, market_data)
+
+                    # Update portfolio equity curve
+                    current_prices = {
+                        ticker: data['close'] for ticker, data in market_data.items()
+                    }
+                    self.portfolio.update_equity(current_time, current_prices)
+
+                current_time += timedelta(hours=1)
+
+            self._process_option_expiration(current_date, market_close)
 
             current_date += timedelta(days=1)
 
-
-        # Close any remaining positions at the end of the backtest
+        # Close remaining positions (rest of the method remains the same)
         positions_to_close = list(self.portfolio.positions.items())
         for ticker, position in positions_to_close:
-            market_data = self._get_market_data(ticker, current_date)
-            if market_data:
+            # Use the final hour's data for closing positions
+            bars = self.data_provider.get_intraday_bars(
+                ticker=ticker,
+                start_date=current_date - timedelta(hours=1),
+                end_date=current_date,
+                interval='1hour'
+            )
+
+            if bars is not None and not bars.empty:
+                market_data = bars.iloc[-1].to_dict()
                 success = self.portfolio.close_position(
-                    ticker=ticker,
+                    instrument=position.instrument,
                     price=market_data['close'],
                     timestamp=current_date
                 )
@@ -292,101 +526,170 @@ class BacktestEngine:
                         f"Closed remaining position in {ticker} @ {market_data['close']:.2f}"
                     )
 
-        # Calculate and return performance metrics
+        # Calculate performance metrics
         metrics = self._calculate_results()
-        self._log_summary(metrics)
-        return metrics
+
+        # Create and return structured results
+        results = BacktestResults(
+            initial_capital=self.initial_capital,
+            final_capital=metrics['final_capital'],
+            total_return=metrics['total_return'],
+            annualized_return=metrics['annualized_return'],
+            annualized_volatility=metrics['annualized_volatility'],
+            sharpe_ratio=metrics['sharpe_ratio'],
+            sortino_ratio=metrics['sortino_ratio'],
+            max_drawdown=metrics['max_drawdown'],
+            options_metrics=metrics['options_metrics'],
+            stock_metrics=metrics['stock_metrics'],
+            transaction_costs=metrics['transaction_costs'],
+            execution_metrics=metrics['execution_metrics'],
+            equity_curve=metrics['equity_curve'],
+            drawdown_series=metrics['drawdown_series'],
+            daily_returns=metrics['daily_returns'],
+            trades=self.portfolio.trades
+        )
+
+        print(self.portfolio.trades)
+        print(self)
+
+        # Log summary
+        self.logger.info("\n" + results.summarize())
+
+        return results
+
+    def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
+        """Handle option expiration and assignments."""
+        option_positions = [
+            pos for pos in self.portfolio.positions.values()
+            if pos.instrument.is_option and pos.instrument.expiration.date() == current_date.date()
+        ]
+
+        for position in option_positions:
+            option = position.instrument
+            ticker = option.format_option_ticker()
+
+            # Get underlying price
+            underlying_ticker = option.underlying_ticker
+            underlying_data = self.data_provider.get_intraday_bars(
+                ticker=underlying_ticker,
+                start_date=expiration_time - timedelta(hours=1),
+                end_date=expiration_time,
+                interval='1hour'
+            )
+
+            if underlying_data is None or underlying_data.empty:
+                self.logger.warning(f"No underlying data found for {underlying_ticker}")
+                continue
+
+            underlying_close = underlying_data.iloc[-1]['close']
+
+            # Calculate intrinsic value
+            if option.instrument_type == InstrumentType.CALL_OPTION:
+                intrinsic_value = max(underlying_close - option.strike, 0)
+            else:  # PUT_OPTION
+                intrinsic_value = max(option.strike - underlying_close, 0)
+
+            # Log expiration status
+            if intrinsic_value > 0:
+                self.logger.info(
+                    f"Option {ticker} is in-the-money at expiration with intrinsic value ${intrinsic_value:.2f}."
+                )
+            else:
+                self.logger.info(f"Option {ticker} expires worthless (out-of-the-money).")
+
+            # Calculate transaction costs for potential assignment
+            transaction_costs = 0
+            if intrinsic_value > 0:
+                assignment_quantity = abs(position.quantity) * 100
+                transaction_costs = self.market_simulator.calculate_commission(
+                    option.strike * assignment_quantity,
+                    assignment_quantity,
+                    'stock'
+                )
+
+                # Handle assignment
+                if option.instrument_type == InstrumentType.CALL_OPTION and position.quantity < 0:
+                    # For covered calls, execute stock sale at strike
+                    self.sell_stock(
+                        ticker=underlying_ticker,
+                        quantity=assignment_quantity,
+                        timestamp=expiration_time,
+                        market_data={underlying_ticker: {'close': underlying_close}},
+                        is_assignment=True
+                    )
+
+            # Calculate P&L
+            multiplier = option.get_multiplier()
+            initial_premium = abs(position.quantity) * position.entry_price * multiplier
+            assignment_cost = intrinsic_value * abs(position.quantity) * multiplier
+            realized_pnl = initial_premium - assignment_cost - transaction_costs
+
+            # Log P&L breakdown
+            self.logger.info(
+                f"Option {ticker} expiration P&L breakdown:"
+                f"\n  Initial premium received: ${initial_premium:.2f}"
+                f"\n  Assignment cost: ${assignment_cost:.2f}"
+                f"\n  Transaction costs: ${transaction_costs:.2f}"
+                f"\n  Total P&L: ${realized_pnl:.2f}"
+            )
+
+            # Close the position (this will handle cash updates)
+            trade = Trade(
+                instrument=option,
+                entry_time=position.entry_date,
+                exit_time=expiration_time,
+                entry_price=position.entry_price,
+                exit_price=intrinsic_value,
+                quantity=position.quantity,
+                transaction_costs=transaction_costs,
+                assignment=(intrinsic_value > 0),
+                realized_pnl=realized_pnl
+            )
+
+            # Add trade to portfolio and remove position
+            self.portfolio.trades.append(trade)
+            del self.portfolio.positions[ticker]
 
     def _calculate_results(self) -> Dict[str, Any]:
         """Calculate comprehensive backtest results."""
-        # Convert equity curve to dataframe with proper column names
+        # Convert equity curve to dataframe
         equity_curve_dict = {'timestamp': [], 'equity': []}
         for timestamp, equity in self.portfolio.equity_curve:
             equity_curve_dict['timestamp'].append(timestamp)
             equity_curve_dict['equity'].append(equity)
 
         equity_df = pd.DataFrame.from_dict(equity_curve_dict).set_index('timestamp')
-
         equity_df['returns'] = equity_df['equity'].pct_change()
-
-        # Basic metrics
-        total_return = (equity_df['equity'].iloc[-1] / equity_df['equity'].iloc[0]) - 1
-        trading_days = len(equity_df)
-
-        # Risk metrics
         daily_returns = equity_df['returns'].dropna()
-        daily_std = daily_returns.std()
-        annualized_vol = daily_std * np.sqrt(252) if daily_std != 0 else 0
-        annualized_return = ((1 + total_return) ** (252 / trading_days)) - 1
 
-        # Drawdown analysis
-        equity_df['peak'] = equity_df['equity'].cummax()
-        equity_df['drawdown'] = (equity_df['equity'] - equity_df['peak']) / equity_df['peak']
-        max_drawdown = equity_df['drawdown'].min()
+        # Calculate metrics using the new formulae module
+        return_metrics = calculate_return_metrics(pd.Series(equity_df['equity']))
+        drawdown_metrics = calculate_drawdown_metrics(pd.Series(equity_df['equity']))
+        risk_metrics = calculate_risk_metrics(pd.Series(daily_returns))
 
-        # Transaction cost analysis
-        total_commission = sum(self.commission_costs)
-        total_slippage = sum(self.slippage_costs)
-        avg_fill_ratio = np.mean(self.fill_ratios) if self.fill_ratios else 0
-
-        # Separate options and stock trades
-        options_trades = [t for t in self.portfolio.trades if t.position_type == 'option']
-        stock_trades = [t for t in self.portfolio.trades if not t.position_type == 'option']
+        # Separate trades by type
+        options_trades = [t for t in self.portfolio.trades if t.instrument.is_option]
+        stock_trades = [t for t in self.portfolio.trades if not t.instrument.is_option]
 
         # Calculate trade metrics
-        def calculate_trade_metrics(trades):
-            if not trades:
-                return {
-                    'count': 0,
-                    'win_rate': 0,
-                    'avg_pnl': 0,
-                    'total_pnl': 0,
-                    'total_commission': 0,
-                    'avg_holding_period': 0,
-                    'profit_factor': 0
-                }
+        options_metrics = calculate_trade_metrics(options_trades)
+        stock_metrics = calculate_trade_metrics(stock_trades)
 
-            wins = [t for t in trades if t.pnl > 0]
-            losses = [t for t in trades if t.pnl <= 0]
-
-            holding_periods = [
-                (t.exit_date - t.entry_date).days
-                for t in trades
-            ]
-
-            return {
-                'count': len(trades),
-                'win_rate': len(wins) / len(trades),
-                'avg_pnl': np.mean([t.pnl for t in trades]),
-                'total_pnl': sum(t.pnl for t in trades),
-                'total_commission': total_commission,
-                'avg_holding_period': np.mean(holding_periods),
-                'profit_factor': (
-                    abs(sum(t.pnl for t in wins)) /
-                    abs(sum(t.pnl for t in losses))
-                    if losses else float('inf')
-                )
-            }
-
-        # Daily metrics averages
-        avg_daily_metrics = {
-            'avg_slippage': np.mean(self.daily_metrics['slippage']),
-            'avg_commission': np.mean(self.daily_metrics['commissions']),
-            'avg_fill_ratio': np.mean(self.daily_metrics['fills']),
-            'avg_volume_participation': np.mean(self.daily_metrics['volume_participation'])
-        }
+        # Calculate total transaction costs
+        total_commission = sum(t.transaction_costs for t in self.portfolio.trades if t.instrument.is_option)
+        total_slippage = sum(t.transaction_costs for t in self.portfolio.trades if t.instrument.is_option)
+        # Alternatively, if slippage and commissions are tracked separately
+        total_commission = sum(self.commission_costs)
+        total_slippage = sum(self.slippage_costs)
 
         # Compile results
         results = {
             'initial_capital': self.initial_capital,
             'final_capital': equity_df['equity'].iloc[-1],
-            'total_return': total_return,
-            'annualized_return': annualized_return,
-            'annualized_volatility': annualized_vol,
-            'sharpe_ratio': (annualized_return / annualized_vol) if annualized_vol != 0 else 0,
-            'max_drawdown': max_drawdown,
-            'options_metrics': calculate_trade_metrics(options_trades),
-            'stock_metrics': calculate_trade_metrics(stock_trades),
+            **return_metrics,
+            **drawdown_metrics,
+            'options_metrics': options_metrics,
+            'stock_metrics': stock_metrics,
             'transaction_costs': {
                 'total_commission': total_commission,
                 'total_slippage': total_slippage,
@@ -404,103 +707,18 @@ class BacktestEngine:
                 )
             },
             'execution_metrics': {
-                'fill_ratio': avg_fill_ratio,
-                'daily_metrics': avg_daily_metrics
+                'fill_ratio': np.mean(self.fill_ratios) if self.fill_ratios else 0,
+                'daily_metrics': {
+                    'avg_slippage': np.mean(self.daily_metrics['slippage']),
+                    'avg_commission': np.mean(self.daily_metrics['commissions']),
+                    'avg_fill_ratio': np.mean(self.daily_metrics['fills']),
+                    'avg_volume_participation': np.mean(self.daily_metrics['volume_participation'])
+                }
             },
             'equity_curve': equity_df,
-            'drawdown_series': equity_df['drawdown'],
             'daily_returns': daily_returns,
-            'trade_count': len(self.portfolio.trades),
-            'win_rate': (
-                sum(1 for t in self.portfolio.trades if t.pnl > 0) /
-                len(self.portfolio.trades) if self.portfolio.trades else 0
-            )
+            'trade_count': len(self.portfolio.trades)
         }
 
-        # Add risk analysis metrics
-        # ensure daily_returns is not empty
-        results.update({k: v for k, v in self._calculate_risk_metrics(daily_returns).items()})
-
+        results.update(risk_metrics)
         return results
-
-    def _calculate_risk_metrics(self, daily_returns) -> Dict[str, Any]:
-        """Calculate additional risk metrics."""
-        if daily_returns.empty:
-            return {
-                'sortino_ratio': 0,
-                'calmar_ratio': 0,
-                'var_95': 0,
-                'var_99': 0,
-                'max_consecutive_losses': 0
-            }
-
-        # Sortino Ratio
-        downside_returns = daily_returns[daily_returns < 0]
-        downside_std = downside_returns.std() * np.sqrt(252)
-        avg_return = daily_returns.mean() * 252
-        sortino_ratio = avg_return / downside_std if downside_std != 0 else 0
-
-        # Value at Risk
-        var_95 = daily_returns.quantile(0.05)
-        var_99 = daily_returns.quantile(0.01)
-
-        # Maximum consecutive losses
-        losses = (daily_returns < 0).astype(int)
-        max_consecutive_losses = (
-            losses.groupby((losses != losses.shift()).cumsum())
-            .count().max()
-        )
-
-        return {
-            'sortino_ratio': sortino_ratio,
-            'var_95': var_95,
-            'var_99': var_99,
-            'max_consecutive_losses': max_consecutive_losses
-        }
-
-    def _log_summary(self, metrics: Dict[str, Any]) -> None:
-        """Log detailed backtest summary."""
-        summary_lines = [
-            f"\n{self.strategy.name} Backtest Results",
-            "=" * 50,
-            "\nPerformance Metrics:",
-            f"  Total Return: {metrics['total_return']:.2%}",
-            f"  Annualized Return: {metrics['annualized_return']:.2%}",
-            f"  Sharpe Ratio: {metrics['sharpe_ratio']:.2f}",
-            f"  Sortino Ratio: {metrics['sortino_ratio']:.2f}",
-
-            "\nRisk Metrics:",
-            f"  Max Drawdown: {metrics['max_drawdown']:.2%}",
-            f"  Annualized Volatility: {metrics['annualized_volatility']:.2%}",
-            f"  95% VaR: {metrics['var_95']:.2%}",
-            f"  Max Consecutive Losses: {metrics['max_consecutive_losses']}",
-
-            "\nTransaction Costs:",
-            f"  Total Commission: ${metrics['transaction_costs']['total_commission']:,.2f}",
-            f"  Total Slippage: ${metrics['transaction_costs']['total_slippage']:,.2f}",
-            f"  Cost % of AUM: {metrics['transaction_costs']['cost_as_pct_aum']:.2%}",
-
-            "\nExecution Quality:",
-            f"  Fill Ratio: {metrics['execution_metrics']['fill_ratio']:.2%}",
-            f"  Avg Daily Volume Participation: "
-            f"{metrics['execution_metrics']['daily_metrics']['avg_volume_participation']:.2%}",
-
-            "\nTrade Analysis:",
-            "  Options Trades:",
-            f"    Count: {metrics['options_metrics']['count']}",
-            f"    Win Rate: {metrics['options_metrics']['win_rate']:.2%}",
-            f"    Avg P&L: ${metrics['options_metrics']['avg_pnl']:,.2f}",
-            f"    Avg Holding Period: {metrics['options_metrics']['avg_holding_period']:.1f} days",
-            "  Stock Trades:",
-            f"    Count: {metrics['stock_metrics']['count']}",
-            f"    Win Rate: {metrics['stock_metrics']['win_rate']:.2%}",
-            f"    Avg P&L: ${metrics['stock_metrics']['avg_pnl']:,.2f}",
-            f"    Avg Holding Period: {metrics['stock_metrics']['avg_holding_period']:.1f} days",
-
-            "\nCapital Summary:",
-            f"  Initial: ${metrics['initial_capital']:,.2f}",
-            f"  Final: ${metrics['final_capital']:,.2f}",
-            "=" * 50,
-        ]
-
-        self.logger.info("\n".join(summary_lines))

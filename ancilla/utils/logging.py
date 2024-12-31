@@ -179,7 +179,7 @@ class BookLogger(BaseLogger):
             raise ValueError("Logger not initialized")
         self.logger.debug(self.trade_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=trade.ticker,
+            ticker=trade.instrument.ticker,
             action='COMPLETE',
             quantity=trade.quantity,
             entry_price=trade.entry_price,
@@ -205,7 +205,7 @@ class BookLogger(BaseLogger):
             raise ValueError("Logger not initialized")
         self.logger.debug(self.option_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=option.ticker,
+            ticker=option.instrument.ticker,
             strike=option.strike,
             contract_type=option.contract_type,
             expiration=option.expiration.strftime('%Y-%m-%d'),

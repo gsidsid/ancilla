@@ -11,6 +11,7 @@ import pytz
 import time
 
 # Local imports
+from ancilla.backtesting.instruments import Option
 from ancilla.models import OptionData, BarData, MarketSnapshot
 from ancilla.utils.caching import HybridCache
 from ancilla.utils.logging import MarketDataLogger
@@ -102,6 +103,7 @@ class PolygonDataProvider:
 
         except Exception as e:
             self.logger.error(f"Error fetching current price for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
             return None
 
     def get_options_expiration(
@@ -168,6 +170,7 @@ class PolygonDataProvider:
 
         except Exception as e:
             self.logger.error(f"Error fetching option expirations for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
             return None
 
     def get_options_chain(
@@ -361,6 +364,127 @@ class PolygonDataProvider:
             return None
         except Exception as e:
             self.logger.error(f"Error fetching options chain for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
+            return None
+
+    def get_options_contracts(
+        self,
+        ticker: str,
+        as_of: datetime,
+        strike_range: Tuple[float, float],
+        max_expiration_days: int = 365,
+        contract_type: Optional[str] = None,
+    ) -> Optional[List[Option]]:
+        """
+        Get available option contracts for a ticker.
+
+        Args:
+            ticker: Stock symbol.
+            as_of: Reference date for fetching options.
+            strike_range: Tuple of minimum and maximum strike prices.
+            contract_type: Filter by 'call' or 'put' contracts.
+
+        Returns:
+            List of Option objects or None if no data is available.
+        """
+        try:
+            # Define cache parameters
+            cache_params = {
+                'ticker': ticker,
+                'as_of': as_of.isoformat(),
+                'strike_range': strike_range,
+                'max_expiration_days': max_expiration_days,
+                'contract_type': contract_type
+            }
+
+            # Attempt to retrieve cached data
+            cached_data = self._get_cached_data('options_contracts', **cache_params)
+            if cached_data is not None:
+                self.logger.debug(f"Cache hit for {ticker}. Returning cached options contracts.")
+                return [Option(**opt_dict) for opt_dict in cached_data]
+
+            self.logger.debug(f"No cache found for {ticker}. Fetching options contracts from API.")
+
+            # Calculate max expiration date
+            max_expiry = as_of + timedelta(days=max_expiration_days)
+
+            # Get options contracts from API
+            contracts = self._retry_with_backoff(
+                self.client.list_options_contracts,
+                underlying_ticker=ticker,
+                contract_type=contract_type,
+                strike_price_gte=strike_range[0],
+                strike_price_lte=strike_range[1],
+                expiration_date_gte=as_of.strftime('%Y-%m-%d'),
+                expiration_date_lte=max_expiry.strftime('%Y-%m-%d'),
+                as_of=as_of.strftime('%Y-%m-%d')
+            )
+
+            if not contracts:
+                self.logger.info("No options returned from API")
+                return None
+
+            processed_count = 0
+            skipped_count = 0
+            processed_contracts = []
+
+            for contract in contracts:
+                try:
+                    contract_type = contract.contract_type.lower()
+                    strike = float(contract.strike_price)
+
+                    # Check contract type
+                    # There are rare "other" types that we skip
+                    if contract_type != contract_type or contract_type not in ['call', 'put']:
+                        skipped_count += 1
+                        continue
+
+                    # Check strike range
+                    if not (strike_range[0] <= strike <= strike_range[1]):
+                        skipped_count += 1
+                        continue
+
+                    # Create Option object
+                    expiry = pd.to_datetime(contract.expiration_date)
+                    if expiry.tzinfo is None:
+                        expiry = pytz.UTC.localize(expiry)
+
+                    option = Option(
+                        ticker=contract.underlying_ticker,
+                        strike=float(contract.strike_price),
+                        expiration=expiry,
+                        option_type=contract.contract_type.lower()  # Ensure lowercase
+                    )
+
+                    processed_contracts.append(option)
+                    processed_count += 1
+
+                except Exception as e:
+                    self.logger.warning(f"Error processing option {ticker} for {ticker}: {str(e)}")
+                    skipped_count += 1
+                    continue
+
+            # Create a detailed summary log
+            summary_lines = [
+                f"{ticker} Options Contracts",
+                "═" * 50,
+                f"✓ Successfully processed: {processed_count} contracts",
+                f"✗ Total skipped/filtered: {skipped_count} contracts",
+                "═" * 50
+            ]
+            self.logger.info("\n" + "\n".join(summary_lines) + "\n")
+
+            # Cache the result as dictionaries
+            if processed_contracts:
+                cache_data = [vars(opt) for opt in processed_contracts]
+                self._cache_data(cache_data, 'options_contracts', **cache_params)
+                self.logger.debug(f"Options contracts for {ticker} cached successfully.")
+                return processed_contracts
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error fetching options contracts for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
             return None
 
     def get_daily_bars(
@@ -437,6 +561,7 @@ class PolygonDataProvider:
 
         except Exception as e:
             self.logger.error(f"Error fetching daily bars for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
             return None
 
     def get_intraday_bars(
@@ -498,10 +623,10 @@ class PolygonDataProvider:
             aggs = self._retry_with_backoff(
                 self.client.list_aggs,
                 ticker,
-                interval_map[interval],
                 multiplier,
-                start_date,
-                end_date,
+                timespan=interval_map[interval],
+                from_=start_date,
+                to=end_date,
                 adjusted=adjusted
             )
 
@@ -550,6 +675,7 @@ class PolygonDataProvider:
 
         except Exception as e:
             self.logger.error(f"Error fetching intraday bars for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
             return None
 
     def get_option_chain_stats(
@@ -687,8 +813,9 @@ class PolygonDataProvider:
 
             return df
         except Exception as e:
-                    self.logger.error(f"Error calculating historical volatility for {ticker}: {str(e)}")
-                    return None
+            self.logger.error(f"Error calculating historical volatility for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
+            return None
 
     def get_market_hours(
         self,

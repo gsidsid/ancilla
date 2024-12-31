@@ -119,12 +119,18 @@ class MarketSimulator:
             if high == low:
                 return 1.0
 
-            # Higher probability if price is within day's range
+            # Normalize price within [0, 1]
             normalized_price = (price - low) / (high - low)
+            normalized_price = max(0.0, min(1.0, normalized_price))  # Clamp between 0 and 1
+
             if quantity > 0:  # Buy order
-                return max(0, min(1, 1.2 - abs(0.7 - normalized_price)))
+                # Higher probability for lower prices
+                prob = 0.5 + 0.5 * (1 - normalized_price)
             else:  # Sell order
-                return max(0, min(1, 1.2 - abs(0.3 - normalized_price)))
+                # Higher probability for higher prices
+                prob = 0.5 + 0.5 * normalized_price
+
+            return prob
         else:
             # Options are generally harder to fill
             return 0.85 if abs(quantity) < 10 else 0.70  # Lower probability for larger option orders

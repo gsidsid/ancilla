@@ -6,13 +6,14 @@ import os
 import dotenv
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
 from ancilla.providers.polygon_data_provider import PolygonDataProvider
 from ancilla.backtesting.engine import BacktestEngine
 from ancilla.backtesting.strategy import Strategy
 from ancilla.models import OptionData
+from ancilla.backtesting.instruments import Stock, Option
 
 dotenv.load_dotenv()
 
@@ -42,17 +43,15 @@ class SimpleTestStrategy(Strategy):
             shares = int(position_value / data['close'])
 
             if shares > 0:
-                # Open position
+                # Open position using new buy_stock method
                 self.logger.info(
                     f"Opening position in {ticker}: {shares} shares @ ${data['close']:.2f}"
                 )
-                success = self.engine.execute_order(
+                success = self.engine.buy_stock(
                     ticker=ticker,
                     quantity=shares,
-                    price=data['close'],
                     timestamp=timestamp,
-                    market_data=market_data,
-                    position_type='stock'
+                    market_data=market_data
                 )
                 if success:
                     self.entry_prices[ticker] = data['close']
@@ -73,8 +72,8 @@ class VolatilityBasedStrategy(Strategy):
         self.base_position_size = position_size
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
-        self.price_history: Dict[str, pd.DataFrame] = {}  # Store price history for each ticker
-        self.entry_prices = {}  # Track entry prices for each ticker
+        self.price_history: Dict[str, pd.DataFrame] = {}
+        self.entry_prices = {}
 
     def on_data(self, timestamp: datetime, market_data: Dict[str, Any]) -> None:
         """Adjust positions based on volatility."""
@@ -82,12 +81,10 @@ class VolatilityBasedStrategy(Strategy):
         for ticker, data in market_data.items():
             self.logger.debug(f"{ticker} Data - Open: {data.get('open', data['close'])}, High: {data.get('high', data['close'])}, Low: {data.get('low', data['close'])}, Close: {data['close']:.2f}")
 
-            # Update price history
+            # Update price history (existing price history update code remains the same)
             if ticker not in self.price_history:
-                # Initialize with correct data types to prevent FutureWarnings
                 self.price_history[ticker] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close'])
 
-            # Create a new DataFrame for the new row
             new_row = pd.DataFrame([{
                 'timestamp': timestamp,
                 'open': data.get('open', data['close']),
@@ -96,25 +93,19 @@ class VolatilityBasedStrategy(Strategy):
                 'close': data['close']
             }])
 
-            # Check if the existing DataFrame is empty
             if self.price_history[ticker].empty:
                 self.price_history[ticker] = new_row
                 self.logger.debug(f"Initialized price history for {ticker} with first data point.")
             else:
-                # Concatenate the new row to the existing DataFrame
                 self.price_history[ticker] = pd.concat([self.price_history[ticker], new_row], ignore_index=True)
 
-            # Ensure we have enough data to calculate ATR
             if len(self.price_history[ticker]) < self.atr_period + 1:
-                self.logger.debug(f"Not enough data to calculate ATR for {ticker}. Needed: {self.atr_period + 1}, Available: {len(self.price_history[ticker])}")
-                continue  # Need at least atr_period + 1 data points for ATR calculation
+                continue
 
-            # Calculate ATR manually
+            # Calculate ATR
             atr = self.calculate_atr(ticker)
-
             if atr is None or atr == 0:
-                self.logger.debug(f"ATR is {atr} for {ticker} at {timestamp}, skipping trade logic.")
-                continue  # Skip if ATR is not available or zero
+                continue
 
             self.logger.debug(f"{ticker} ATR: {atr:.2f}")
 
@@ -130,13 +121,11 @@ class VolatilityBasedStrategy(Strategy):
                 # Exit condition
                 if data['close'] < exit_threshold:
                     self.logger.info(f"Exiting position in {ticker}: {position.quantity} shares @ ${data['close']:.2f}")
-                    success = self.engine.execute_order(
+                    success = self.engine.sell_stock(
                         ticker=ticker,
-                        quantity=-position.quantity,  # Sell all shares
-                        price=data['close'],
+                        quantity=position.quantity,  # Sell all shares
                         timestamp=timestamp,
-                        market_data=market_data,
-                        position_type='stock'
+                        market_data=market_data
                     )
                     if success:
                         del self.entry_prices[ticker]
@@ -149,7 +138,7 @@ class VolatilityBasedStrategy(Strategy):
                     # Adjust position size inversely with ATR
                     portfolio_value = self.portfolio.get_total_value()
                     volatility_adjustment = self.base_position_size / atr
-                    position_size = min(volatility_adjustment, self.base_position_size)  # Cap the position size
+                    position_size = min(volatility_adjustment, self.base_position_size)
                     position_value = portfolio_value * position_size
                     shares = int(position_value / data['close'])
 
@@ -157,13 +146,11 @@ class VolatilityBasedStrategy(Strategy):
                         self.logger.info(
                             f"Opening position in {ticker}: {shares} shares @ ${data['close']:.2f} (ATR: {atr:.2f})"
                         )
-                        success = self.engine.execute_order(
+                        success = self.engine.buy_stock(
                             ticker=ticker,
                             quantity=shares,
-                            price=data['close'],
                             timestamp=timestamp,
-                            market_data=market_data,
-                            position_type='stock'
+                            market_data=market_data
                         )
                         if success:
                             self.entry_prices[ticker] = data['close']
@@ -173,13 +160,13 @@ class VolatilityBasedStrategy(Strategy):
 
     def calculate_atr(self, ticker: str) -> float:
         """Calculate the Average True Range (ATR) for the given ticker."""
+        # ATR calculation remains the same
         df = self.price_history[ticker].tail(self.atr_period + 1).copy()
         df.reset_index(drop=True, inplace=True)
 
         if len(df) < self.atr_period + 1:
             raise ValueError(f"Not enough data to calculate ATR for {ticker}")
 
-        # Calculate True Range (TR)
         tr = []
         for i in range(1, len(df)):
             current_high = df.at[i, 'high']
@@ -193,15 +180,12 @@ class VolatilityBasedStrategy(Strategy):
             tr_value = max(tr1, tr2, tr3)
             tr.append(tr_value)
 
-        # Remove NaN or infinite TR values
         tr = [value for value in tr if not pd.isna(value) and np.isfinite(value)]
 
         if len(tr) < self.atr_period:
             raise ValueError(f"Not enough valid TR values to calculate ATR for {ticker}")
 
-        # Calculate ATR as the average of TR over the period
-        atr = sum(tr[-self.atr_period:]) / self.atr_period
-        return atr
+        return sum(tr[-self.atr_period:]) / self.atr_period
 
 
 def run_backtest(strategy_class):
@@ -218,22 +202,22 @@ def run_backtest(strategy_class):
     if strategy_class == SimpleTestStrategy:
         strategy = SimpleTestStrategy(
             data_provider=data_provider,
-            position_size=0.2  # 20% of portfolio per position
+            position_size=0.2
         )
     elif strategy_class == VolatilityBasedStrategy:
         strategy = VolatilityBasedStrategy(
             data_provider=data_provider,
-            position_size=0.2,       # Base position size (20% of portfolio)
-            atr_period=14,            # ATR period
-            atr_multiplier=1.5        # Multiplier for entry/exit thresholds
+            position_size=0.2,
+            atr_period=14,
+            atr_multiplier=1.5
         )
     else:
         raise ValueError("Unsupported strategy class provided.")
 
     # Set up test parameters
-    tickers = ["AAPL", "MSFT"]  # Reduced ticker list for testing
+    tickers = ["MSFT"]
     start_date = datetime(2024, 1, 1, tzinfo=pytz.UTC)
-    end_date = datetime(2024, 1, 31, tzinfo=pytz.UTC)  # Shorter test period
+    end_date = datetime(2024, 12, 29, tzinfo=pytz.UTC)
     initial_capital = 100000
 
     # Initialize backtest engine
@@ -258,9 +242,8 @@ def run_backtest(strategy_class):
         )
     )
 
-    # Run backtest
+    # Run backtest and get structured results
     results = engine.run()
-
     return results
 
 
@@ -269,16 +252,30 @@ def test_backtest():
     print("Running SimpleTestStrategy Backtest...")
     simple_results = run_backtest(SimpleTestStrategy)
 
-    # plot simple_results['equity_curve']
-    plt.plot(simple_results['equity_curve']['equity'])
-    plt.title('SimpleTestStrategy Equity Curve')
-    plt.xlabel('Time')
-    plt.ylabel('$')
-    plt.show()
+    # Plot results using the new structured results class
+    simple_fig = simple_results.plot_equity_curve()
+    simple_fig.show()
+
+    # Print performance summary
+    print("\nSimple Strategy Results:")
+    print(simple_results.summarize())
+
+    # Get detailed risk metrics
+    print("\nRisk Metrics:")
+    risk_metrics = simple_results.risk_metrics()
+    for metric, value in risk_metrics.items():
+        print(f"{metric}: {value:.4f}")
 
     print("\nRunning VolatilityBasedStrategy Backtest...")
     volatility_results = run_backtest(VolatilityBasedStrategy)
 
+    # Plot results
+    vol_fig = volatility_results.plot_equity_curve()
+    vol_fig.show()
+
+    # Print performance summary
+    print("\nVolatility Strategy Results:")
+    print(volatility_results.summarize())
 
 
 if __name__ == "__main__":

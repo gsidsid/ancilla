@@ -1,6 +1,7 @@
 # ancilla/backtesting/portfolio.py
 from datetime import datetime
 from typing import Dict, Optional, List
+from ancilla.backtesting.instruments import Instrument, InstrumentType
 from ancilla.models import Trade, Position
 from ancilla.utils.logging import BookLogger
 
@@ -22,79 +23,112 @@ class Portfolio:
         )
 
     def get_position_value(self, market_prices: Optional[Dict[str, float]] = None) -> float:
-        """
-        Get the total value of all open positions.
-        If market_prices provided, use those, otherwise use entry prices.
-        """
+        """Get the total value of all open positions."""
         total_value = 0
+
         for ticker, position in self.positions.items():
-            price = (market_prices.get(ticker) if market_prices
-                    else position.entry_price)
-            multiplier = 100 if position.position_type == 'option' else 1
+            if market_prices and ticker in market_prices:
+                price = market_prices[ticker]
+            else:
+                price = position.entry_price
+
             if price is None:
                 continue
-            total_value += position.quantity * price * multiplier
+
+            if position.instrument.is_option:
+                multiplier = position.instrument.get_multiplier()
+                value = position.quantity * price * multiplier
+                total_value += value
+            else:
+                value = position.quantity * price
+                total_value += value
+
         return total_value
 
     def get_total_value(self, market_prices: Optional[Dict[str, float]] = None) -> float:
         """Get the total value of the portfolio."""
-        return self.cash + self.get_position_value(market_prices)
+        position_value = self.get_position_value(market_prices)
+        total = self.cash + position_value
+
+        return total
 
     def open_position(
         self,
-        ticker: str,
+        instrument: Instrument,
         quantity: int,
         price: float,
         timestamp: datetime,
-        position_type: str = 'stock',
-        commission: float = 0.0,
-        slippage: float = 0.0
+        transaction_costs: float = 0.0
     ) -> bool:
         """Open a new position with logging."""
-        # Check if position already exists
-        if ticker in self.positions:
-            self.logger.get_logger().warning(f"Position already exists for {ticker}")
-            return False
+        # Calculate position impact
+        multiplier = instrument.get_multiplier()
+        position_value = abs(quantity) * price * multiplier
 
-        # Calculate total transaction cost including commission and slippage
-        multiplier = 100 if position_type == 'option' else 1
-        position_cost = quantity * price * multiplier
-        total_cost = position_cost + commission + slippage
-
-        if total_cost > self.cash:
-            self.logger.get_logger().warning(
-                f"Insufficient cash for {ticker}: "
-                f"need ${total_cost:,.2f} (position: ${position_cost:,.2f}, "
-                f"commission: ${commission:,.2f}, slippage: ${slippage:,.2f}), "
-                f"have ${self.cash:,.2f}"
+        # Check if this is part of a covered call
+        if instrument.is_option:
+            is_covered_call = (
+                instrument.instrument_type == InstrumentType.CALL_OPTION
+                and quantity < 0
+                and instrument.underlying_ticker in self.positions
+                and self.positions[instrument.underlying_ticker].quantity > 0
             )
-            return False
+
+            if is_covered_call:
+                # For covered calls, we only want to account for the premium in cash
+                cash_impact = position_value - transaction_costs
+            else:
+                # For other options, normal buy/sell logic
+                if quantity > 0:
+                    cash_impact = -(position_value + transaction_costs)
+                else:
+                    cash_impact = position_value - transaction_costs
+
+        # For buying (quantity > 0), we need sufficient cash for position + costs
+        # For selling (quantity < 0), we receive premium but need cash for costs
+        if quantity > 0:
+            required_cash = position_value + transaction_costs
+            if required_cash > self.cash:
+                self.logger.get_logger().warning(
+                    f"Insufficient cash for {instrument.ticker}: "
+                    f"need ${required_cash:,.2f}, have ${self.cash:,.2f}"
+                )
+                return False
+            cash_impact = -required_cash
+        else:
+            # For selling, just need enough for transaction costs
+            if transaction_costs > self.cash:
+                self.logger.get_logger().warning(
+                    f"Insufficient cash for {instrument.ticker} transaction costs: "
+                    f"need ${transaction_costs:,.2f}, have ${self.cash:,.2f}"
+                )
+                return False
+            cash_impact = position_value - transaction_costs  # Receive premium, pay costs
 
         # Create the position
+        ticker = instrument.ticker
+        if instrument.is_option:
+            ticker = instrument.format_option_ticker()
+
         self.positions[ticker] = Position(
-            ticker=ticker,
+            instrument=instrument,
             quantity=quantity,
             entry_price=price,
-            entry_date=timestamp,
-            position_type=position_type,
-            commission=commission,
-            slippage=slippage
+            entry_date=timestamp
         )
 
-        # Deduct total cost from cash
-        self.cash -= total_cost
+        # Update cash
+        self.cash += cash_impact
 
-        # Log the transaction with full cost breakdown
+        # Log the transaction
         self.logger.position_open(
             timestamp=timestamp,
-            ticker=ticker,
+            ticker=instrument.ticker,
             quantity=quantity,
             price=price,
-            position_type=position_type,
+            position_type='option' if instrument.is_option else 'stock',
             capital=self.cash
         )
-
-        # Update capital state
         self.logger.capital_update(
             timestamp,
             self.cash,
@@ -106,69 +140,58 @@ class Portfolio:
 
     def close_position(
         self,
-        ticker: str,
+        instrument: Instrument,
         price: float,
         timestamp: datetime,
-        commission: float = 0.0,
-        slippage: float = 0.0
-    ) -> Optional[Trade]:
+        transaction_costs: float = 0.0,
+        realized_pnl: Optional[float] = None
+    ) -> bool:
         """Close a position with logging."""
+        ticker = instrument.ticker
+        if instrument.is_option:
+            ticker = instrument.format_option_ticker()
+
         if ticker not in self.positions:
             self.logger.get_logger().warning(f"No position found for {ticker}")
-            return None
+            return False
 
         position = self.positions[ticker]
-        multiplier = 100 if position.position_type == 'option' else 1
 
-        # Calculate gross proceeds and costs
-        gross_proceeds = position.quantity * price * multiplier
-        total_costs = commission + slippage
-        net_proceeds = gross_proceeds - total_costs
-
-        # Calculate complete P&L including entry and exit costs
-        entry_costs = position.commission + position.slippage
-        exit_costs = commission + slippage
-        total_costs = entry_costs + exit_costs
-
-        gross_pnl = gross_proceeds - (position.quantity * position.entry_price * multiplier)
-        net_pnl = gross_pnl - total_costs
-
+        # Create trade record
         trade = Trade(
-            ticker=ticker,
-            entry_date=position.entry_date,
-            exit_date=timestamp,
+            instrument=instrument,
+            entry_time=position.entry_date,
+            exit_time=timestamp,
             entry_price=position.entry_price,
             exit_price=price,
             quantity=position.quantity,
-            pnl=net_pnl,
-            position_type=position.position_type,
-            metadata={
-                'entry_commission': position.commission,
-                'entry_slippage': position.slippage,
-                'exit_commission': commission,
-                'exit_slippage': slippage,
-                'total_costs': total_costs,
-                'gross_pnl': gross_pnl,
-                'net_pnl': net_pnl
-            }
+            transaction_costs=transaction_costs,
+            realized_pnl=realized_pnl
         )
 
         self.trades.append(trade)
-        self.cash += net_proceeds
+
+        # If realized P&L is provided, use it directly
+        if realized_pnl is not None:
+            self.cash += realized_pnl
+        else:
+            # Calculate proceeds and P&L
+            gross_proceeds = position.get_market_value(price)
+            net_proceeds = gross_proceeds - transaction_costs
+            self.cash += net_proceeds
+
         del self.positions[ticker]
 
-        # Log the close with full cost breakdown
+        # Log the close
         self.logger.position_close(
             timestamp=timestamp,
             ticker=ticker,
             quantity=position.quantity,
             price=price,
-            position_type=position.position_type,
+            position_type='option' if instrument.is_option else 'stock',
             capital=self.cash
         )
-
         self.logger.trade_complete(timestamp, trade)
-
         self.logger.capital_update(
             timestamp,
             self.cash,
@@ -176,17 +199,9 @@ class Portfolio:
             self.get_total_value()
         )
 
-        return trade
+        return True
 
     def update_equity(self, timestamp: datetime, market_prices: Dict[str, float]):
         """Update equity curve with current market prices."""
         current_equity = self.get_total_value(market_prices)
         self.equity_curve.append((timestamp, current_equity))
-
-        # Log daily capital update
-        self.logger.capital_update(
-            timestamp,
-            self.cash,
-            self.get_position_value(market_prices),
-            current_equity
-        )
