@@ -29,7 +29,7 @@ class CoveredCallStrategy(Strategy):
         max_days_to_expiry: int = 45,
         roll_dte_threshold: int = 5,
         strike_flex_pct: float = 0.02,
-        trading_hours: Tuple[int, int] = (10, 15)  # Only trade between 10AM and 3PM
+        trading_hours: Tuple[int, int] = (10, 15)
     ):
         super().__init__(data_provider, name="covered_call")
         self.position_size = position_size
@@ -39,30 +39,34 @@ class CoveredCallStrategy(Strategy):
         self.roll_dte_threshold = roll_dte_threshold
         self.strike_flex_pct = strike_flex_pct
         self.trading_hours = trading_hours
-
-        # Track positions by instrument type
-        self.stock_positions = {}  # ticker -> Stock instrument
-        self.active_calls = {}     # ticker -> Option instrument
+        self.stock_positions = {}
+        self.active_calls = {}
 
     def on_data(self, timestamp: datetime, market_data: Dict[str, Any]) -> None:
         """Process hourly market data updates."""
-        # Only trade during specified hours
         if not (self.trading_hours[0] <= timestamp.hour <= self.trading_hours[1]):
             return
 
-        for ticker, data in market_data.items():
-            current_price = data['close']
+        # Create a copy of the market data to prevent modification during iteration
+        market_data_snapshot = dict(market_data)
 
-            # First check if we need to roll any existing calls
-            if ticker in self.active_calls:
+        # First handle all existing positions
+        for ticker in list(self.active_calls.keys()):
+            if ticker in market_data_snapshot:
+                current_price = market_data_snapshot[ticker]['close']
                 self._manage_existing_call(ticker, current_price, timestamp, market_data)
 
-            # If we don't have a stock position, consider entering one
-            # Make sure it's not an options ticker
-            if ticker not in self.stock_positions and len(ticker) <= 5:
-                self._enter_stock_position(ticker, current_price, timestamp, market_data)
+        # Then handle potential new positions
+        for ticker, data in market_data_snapshot.items():
+            current_price = data['close']
 
-            # If we have stock but no call, write a new covered call
+            # Skip if it's an options ticker
+            if len(ticker) > 5:
+                continue
+
+            # Handle new stock positions and calls
+            if ticker not in self.stock_positions:
+                self._enter_stock_position(ticker, current_price, timestamp, market_data)
             elif ticker not in self.active_calls:
                 self._write_new_call(ticker, current_price, timestamp, market_data)
 
@@ -71,11 +75,9 @@ class CoveredCallStrategy(Strategy):
         """Enter a new stock position."""
         portfolio_value = self.portfolio.get_total_value()
         position_value = portfolio_value * self.position_size
-
-        # Let's limit to just 1 covered call for now
         shares = min(100, int(position_value / price))
 
-        if shares >= 100:  # Only enter if we can write at least one call
+        if shares >= 100:
             self.logger.info(f"Buying {shares} shares of {ticker} @ ${price:.2f}")
             stock = Stock(ticker)
             success = self.engine.buy_stock(
@@ -87,11 +89,9 @@ class CoveredCallStrategy(Strategy):
 
             if success:
                 self.stock_positions[ticker] = stock
-                # Immediately try to write a call
-                self._write_new_call(ticker, price, timestamp, market_data)
 
     def _write_new_call(self, ticker: str, current_price: float, timestamp: datetime,
-                           market_data: Dict[str, Any]) -> None:
+                       market_data: Dict[str, Any]) -> None:
         """Write a new covered call against an existing stock position."""
         stock_position = None
         for pos in self.portfolio.positions.values():
@@ -110,7 +110,6 @@ class CoveredCallStrategy(Strategy):
             return
 
         target_strike = current_price * (1 + self.otm_pct)
-
         strike_range = (
             target_strike * (1 - self.strike_flex_pct),
             target_strike * (1 + self.strike_flex_pct)
@@ -157,34 +156,27 @@ class CoveredCallStrategy(Strategy):
             self.logger.info(f"Sold call for {ticker} @ strike {selected_call.strike} expiring {selected_call.expiration.date()}")
 
     def _manage_existing_call(self, ticker: str, current_price: float,
-                                timestamp: datetime, market_data: Dict[str, Any]) -> None:
+                            timestamp: datetime, market_data: Dict[str, Any]) -> None:
         """Manage existing call position, rolling if necessary."""
-
         call = self.active_calls[ticker]
 
-        # If the call is expired, handle expiration
         if timestamp > call.expiration:
             for pos_ticker, position in self.portfolio.positions.items():
                 self.logger.info(f"  {pos_ticker}: {type(position.instrument).__name__}, {position.quantity} units")
 
-            # On expiration, all we need to do is remove it from tracking
             self.active_calls.pop(ticker)
 
-            # Can write new calls against our stock position
             if any(isinstance(pos.instrument, Stock) for pos in self.portfolio.positions.values()):
                 self._write_new_call(ticker, current_price, timestamp, market_data)
             return
 
         dte = (call.expiration - timestamp).days
 
-        # Check if we need to roll
         if dte <= self.roll_dte_threshold:
             self.logger.info(f"Rolling call with {dte} DTE remaining")
 
-            # Look specifically for stock positions
             stock_position = None
             for pos in self.portfolio.positions.values():
-                self.logger.info(f"Checking position type: {type(pos.instrument).__name__}, ticker: {pos.instrument.ticker}")
                 if isinstance(pos.instrument, Stock) and pos.instrument.ticker == ticker:
                     stock_position = pos
                     break
@@ -193,15 +185,11 @@ class CoveredCallStrategy(Strategy):
                 self.logger.warning("No stock position found")
                 return
 
-            self.logger.info(f"Found stock position of {stock_position.quantity} shares")
-
             contracts = stock_position.quantity // 100
             if contracts == 0:
                 self.logger.warning("Not enough shares for covered call")
                 return
 
-            # Buy back current call
-            self.logger.info(f"Buying back {contracts} contract(s)")
             success = self.engine.buy_option(
                 option=call,
                 quantity=contracts,
@@ -212,16 +200,9 @@ class CoveredCallStrategy(Strategy):
             if success:
                 self.logger.info(f"Bought back calls for {ticker}")
                 self.active_calls.pop(ticker)
-                # Write new call
                 self._write_new_call(ticker, current_price, timestamp, market_data)
             else:
                 self.logger.warning(f"Failed to buy back calls for {ticker}")
-
-        else:
-            self.logger.debug(f"No roll needed yet ({dte} DTE)")
-            self.logger.debug("Current positions:")
-            for pos_ticker, position in self.portfolio.positions.items():
-                self.logger.debug(f"  {pos_ticker}: {type(position.instrument).__name__}, {position.quantity} units")
 
 def test_covered_call_strategy():
     """Run backtest with the covered call strategy."""
@@ -244,7 +225,7 @@ def test_covered_call_strategy():
 
     # Set up test parameters for Q4 2023
     tickers = ["AAPL"]  # Test with a liquid stock
-    start_date = datetime(2023, 10, 1, tzinfo=pytz.UTC)
+    start_date = datetime(2023, 11, 1, tzinfo=pytz.UTC)
     end_date = datetime(2023, 12, 30, tzinfo=pytz.UTC)
     initial_capital = 100000
 

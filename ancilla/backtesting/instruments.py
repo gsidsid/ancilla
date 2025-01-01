@@ -86,3 +86,8 @@ class Option(Instrument):
             expiration=expiration,
             option_type='call' if option_type == 'C' else 'put'
         )
+
+    @property
+    def is_option(self) -> bool:
+        """Check if instrument is an option."""
+        return True

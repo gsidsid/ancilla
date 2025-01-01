@@ -472,7 +472,7 @@ class PolygonDataProvider:
                 f"✗ Total skipped/filtered: {skipped_count} contracts",
                 "═" * 50
             ]
-            self.logger.info("\n" + "\n".join(summary_lines) + "\n")
+            self.logger.debug("\n" + "\n".join(summary_lines) + "\n")
 
             # Cache the result as dictionaries
             if processed_contracts:

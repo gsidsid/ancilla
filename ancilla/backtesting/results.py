@@ -1,6 +1,6 @@
 # ancilla/backtesting/results.py
 from dataclasses import dataclass
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -12,6 +12,7 @@ from ancilla.backtesting.instruments import InstrumentType
 @dataclass
 class BacktestResults:
     """Structured container for backtest results with analysis methods."""
+    strategy_name: str
 
     # Core metrics
     initial_capital: float
@@ -39,6 +40,9 @@ class BacktestResults:
     # Raw data
     trades: List[Any]  # List of Trade objects
 
+    # Portfolio data
+    net_pnl: float
+
     @property
     def total_trades(self) -> int:
         """Get total number of trades."""
@@ -52,113 +56,269 @@ class BacktestResults:
         wins = sum(1 for t in self.trades if t.pnl > 0)
         return wins / len(self.trades)
 
-    def plot_equity_curve(self, include_drawdown: bool = True) -> go.Figure:
-        """
-        Plot equity curve with optional drawdown overlay, trade annotations,
-        and current holdings in the hover tooltip.
-        """
-        # Create a figure with secondary y-axis for drawdown
-        fig = make_subplots(specs=[[{"secondary_y": include_drawdown}]])
 
-        # Add equity curve
-        fig.add_trace(
-            go.Scatter(
-                x=self.equity_curve.index,
-                y=self.equity_curve['equity'],
-                name='Portfolio Value',
-                line=dict(color='blue', width=2),
-                hoverinfo='text',
-                hovertext=self._generate_hover_text()
-            ),
-            secondary_y=False,
-        )
+    def prepare_sequential_data(self):
+        """
+        Prepare the equity data by resetting the index and creating a sequential index.
+        Ensures that there is a 'datetime' column regardless of the original index name.
+        Converts datetime from UTC to US/Eastern timezone.
+        """
+        # Ensure equity_curve is a DataFrame with an 'equity' column
+        if isinstance(self.equity_curve, pd.Series):
+            equity_df = self.equity_curve.to_frame(name='equity')
+        elif isinstance(self.equity_curve, pd.DataFrame):
+            if 'equity' not in self.equity_curve.columns:
+                raise ValueError("The equity_curve DataFrame must contain an 'equity' column.")
+            equity_df = self.equity_curve.copy()
+        else:
+            raise TypeError("equity_curve must be a pandas DataFrame or Series.")
 
-        # Add drawdown if requested
-        if include_drawdown:
+        # Reset index to turn the datetime index into a column
+        equity_df = equity_df.reset_index(drop=False)
+
+        # Determine the name of the datetime column after reset
+        datetime_col = equity_df.columns[0]  # Assumes the first column is datetime after reset
+
+        # Rename the datetime column to 'datetime' for consistency
+        if datetime_col != 'datetime':
+            equity_df = equity_df.rename(columns={datetime_col: 'datetime'})
+
+        # Convert 'datetime' to datetime type if not already
+        if not pd.api.types.is_datetime64_any_dtype(equity_df['datetime']):
+            equity_df['datetime'] = pd.to_datetime(equity_df['datetime'])
+
+        # Localize to UTC if not timezone-aware, then convert to US/Eastern
+        if equity_df['datetime'].dt.tz is None:
+            equity_df['datetime'] = equity_df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+        else:
+            equity_df['datetime'] = equity_df['datetime'].dt.tz_convert('US/Eastern')
+
+        # Create a sequential integer index
+        equity_df['sequential_index'] = equity_df.index
+
+        return equity_df
+
+
+    def plot_equity_curve(self, include_drawdown: bool = False) -> go.Figure:
+            """
+            Plot equity curve with optional drawdown overlay, trade annotations,
+            and performance summary panel.
+            """
+            # Create figure with two subplots side by side
+            fig = make_subplots(
+                rows=1, cols=2,
+                column_widths=[0.8, 0.13],
+                specs=[[{"secondary_y": include_drawdown}, {"type": "table"}]],
+                horizontal_spacing=0.06,
+            )
+
+            # Prepare equity curve data
+            equity_df = self.prepare_sequential_data()
+
+            # Prepare drawdown data
+            drawdown_df = self._prepare_drawdown_data() if include_drawdown else None
+
+            # Add equity curve
             fig.add_trace(
                 go.Scatter(
-                    x=self.drawdown_series.index,
-                    y=self.drawdown_series * 100,  # Convert to percentage
-                    name='Drawdown %',
-                    line=dict(color='red', width=2, dash='dash'),
+                    x=equity_df['sequential_index'],
+                    y=equity_df['equity'],
+                    name='Portfolio Value',
+                    line=dict(color='#FF9900', width=2),
+                    mode='lines',
                     hoverinfo='text',
-                    hovertext=self._generate_drawdown_hover_text()
+                    hovertext=self._generate_hover_text(equity_df['datetime'])
                 ),
-                secondary_y=True,
+                row=1, col=1,
+                secondary_y=False,
             )
+
+            # Add drawdown if requested
+            if include_drawdown and drawdown_df is not None and not drawdown_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=drawdown_df['sequential_index'],
+                        y=drawdown_df['drawdown'] * 100,
+                        name='Drawdown %',
+                        line=dict(color='#FF4444', width=1, dash='dot'),
+                        mode='lines',
+                        hoverinfo='text',
+                        hovertext=[
+                            f"Time: {dt.strftime('%Y-%m-%d %H:%M')}<br>Drawdown: {dd * 100:.2f}%"
+                            for dt, dd in zip(drawdown_df['datetime'], drawdown_df['drawdown'])
+                        ]
+                    ),
+                    row=1, col=1,
+                    secondary_y=True,
+                )
+
+            # Add trade traces
+            trade_traces = self._create_trade_traces()
+            legend_entries = set()
+            for trade_trace in trade_traces:
+                # Check if this type of trade is already in legend
+                trade_name = trade_trace.name
+                if trade_name in legend_entries:
+                    trade_trace.showlegend = False
+                else:
+                    legend_entries.add(trade_name)
+                fig.add_trace(trade_trace, row=1, col=1, secondary_y=False)
+
+            # Add performance summary table
+            summary_data = self._prepare_summary_data()
+            fig.add_trace(
+                go.Table(
+                    header=dict(
+                        values=['Metric', 'Value'],
+                        fill_color='rgb(30, 30, 30)',
+                        align='left',
+                        font=dict(family="Arial", color='white', size=11)
+                    ),
+                    cells=dict(
+                        values=list(zip(*summary_data)),
+                        fill_color='rgb(10, 10, 10)',
+                        align=['left', 'right'],
+                        line_color='rgb(30, 30, 30)',
+                        font=dict(family="Arial", color='white', size=10),
+                        height=25
+                    ),
+                ),
+                row=1, col=2,
+
+            )
+
+            # Update layout
+            fig.update_layout(
+                plot_bgcolor='black',
+                paper_bgcolor='black',
+                title={
+                    'text': self.strategy_name,
+                    'y': 0.95,
+                    'x': 0.4,
+                    'xanchor': 'center',
+                    'yanchor': 'top',
+                    'font': dict(family="Arial", size=16, color='white')
+                },
+                showlegend=True,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.012,
+                    xanchor="right",
+                    x=0.75,
+                    font=dict(family="Arial", size=10, color='white'),
+                    bgcolor='rgba(0,0,0,0.5)'
+                ),
+                hovermode='x unified',
+                margin=dict(l=100, r=0, t=80, b=100)
+            )
+
+            # Update axes for equity curve
+            fig.update_xaxes(
+                row=1, col=1,
+                showgrid=True,
+                gridcolor='#333333',
+                gridwidth=1,
+                griddash='dot',
+                dtick=len(equity_df) // 20,  # Increased grid density
+                tickfont=dict(size=10, color='gray'),
+                tickangle=45,
+                title_font=dict(size=11, color='gray'),
+                title_text="Date"
+            )
+
             fig.update_yaxes(
-                title_text="Drawdown (%)",
-                secondary_y=True,
-                showgrid=False,
-                range=[min(self.drawdown_series * 100) * 1.1, 0]
+                row=1, col=1,
+                secondary_y=False,
+                showgrid=True,
+                gridcolor='#333333',
+                gridwidth=1,
+                griddash='dot',
+                dtick=self.final_capital / 20,  # Increased grid density
+                tickfont=dict(family="Arial", size=10, color='gray'),
+                title_font=dict(family="Arial", size=11, color='gray'),
+                tickformat="$,.0f"
             )
 
-        # Annotate trades
-        trade_traces = self._create_trade_traces()
-        for trade_trace in trade_traces:
-            fig.add_trace(trade_trace, secondary_y=False)
+            if include_drawdown:
+                fig.update_yaxes(
+                    row=1, col=1,
+                    secondary_y=True,
+                    showgrid=False,
+                    gridcolor='#333333',
+                    range=[drawdown_df['drawdown'].min() * 100 * 1.1, 0],
+                    tickfont=dict(size=10, color='gray'),
+                    title_font=dict(size=11, color='gray'),
+                    tickformat=".1%"
+                )
 
-        # Update layout with enhanced styling
-        fig.update_layout(
-            title={
-                'text': "Portfolio Equity Curve",
-                'y':0.95,
-                'x':0.5,
-                'xanchor': 'center',
-                'yanchor': 'top'},
-            xaxis_title='Date',
-            yaxis_title='Portfolio Value ($)',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            hovermode='x unified',
-            template='plotly_dark',  # Choose a professional template
-            margin=dict(l=50, r=50, t=80, b=50)
-        )
+            return fig
 
-        # Update y-axis for equity curve
-        fig.update_yaxes(
-            showgrid=True,
-            gridcolor='gray',
-            gridwidth=0.5,
-            zeroline=False,
-            secondary_y=False
-        )
+    def _prepare_drawdown_data(self) -> Optional[pd.DataFrame]:
+        """Prepare drawdown data for plotting."""
+        if not hasattr(self, 'drawdown_series') or self.drawdown_series.empty:
+            return None
 
-        return fig
+        if isinstance(self.drawdown_series, pd.Series):
+            drawdown_df = self.drawdown_series.to_frame(name='drawdown')
+        else:
+            if 'drawdown' not in self.drawdown_series.columns:
+                return None
+            drawdown_df = self.drawdown_series.copy()
+
+        drawdown_df = drawdown_df.reset_index(drop=False)
+        datetime_col = drawdown_df.columns[0]
+        if datetime_col != 'datetime':
+            drawdown_df = drawdown_df.rename(columns={datetime_col: 'datetime'})
+
+        # Handle timezone conversion
+        if not pd.api.types.is_datetime64_any_dtype(drawdown_df['datetime']):
+            drawdown_df['datetime'] = pd.to_datetime(drawdown_df['datetime'])
+        if drawdown_df['datetime'].dt.tz is None:
+            drawdown_df['datetime'] = drawdown_df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+        else:
+            drawdown_df['datetime'] = drawdown_df['datetime'].dt.tz_convert('US/Eastern')
+
+        drawdown_df['sequential_index'] = drawdown_df.index
+        return drawdown_df
 
     def _create_trade_traces(self) -> List[go.Scatter]:
         """
-        Create Plotly scatter traces for trades, differentiating between
-        stock and option trades and buy/sell actions.
+        Create Plotly scatter traces for trades with enhanced styling.
         """
         trade_traces = []
+        equity_df = self.prepare_sequential_data()
+        datetime_to_seq = dict(zip(equity_df['datetime'], equity_df['sequential_index']))
+
         for trade in self.trades:
             trade_time = trade.entry_time
+            if trade_time not in datetime_to_seq:
+                continue  # Skip trades outside trading hours
+
+            seq_index = datetime_to_seq[trade_time]
             trade_type = 'Option' if trade.instrument.is_option else 'Stock'
             action = 'Buy' if trade.quantity > 0 else 'Sell'
-            color = 'green' if action == 'Buy' else 'red'
-            symbol = 'triangle-up' if action == 'Buy' else 'triangle-down'
-            size = 10
 
-            # Adjust symbol based on instrument type
+            # markers
             if trade.instrument.is_option:
-                symbol = 'diamond' if action == 'Buy' else 'cross'
+                color = '#00FF00' if action == 'Buy' else '#FF4444'  # Bright green/red for options
+                symbol = 'diamond' if action == 'Buy' else 'diamond-cross'
+                size = 12
+            else:
+                color = '#90EE90' if action == 'Buy' else '#FF6B6B'  # Softer green/red for stocks
+                symbol = 'triangle-up' if action == 'Buy' else 'triangle-down'
+                size = 10
 
             trade_traces.append(
                 go.Scatter(
-                    x=[trade_time],
+                    x=[seq_index],
                     y=[self.equity_curve.loc[trade_time, 'equity']],
                     mode='markers',
                     marker=dict(
                         symbol=symbol,
                         size=size,
                         color=color,
-                        line=dict(width=1, color='black')
+                        line=dict(width=1, color='white')
                     ),
                     name=f"{trade_type} {action}",
                     hoverinfo='text',
@@ -167,50 +327,9 @@ class BacktestResults:
             )
         return trade_traces
 
-    def _generate_hover_text(self) -> List[str]:
-        """
-        Generate hover text for equity curve points, including current holdings.
-        """
-        hover_texts = []
-        holdings = self._compute_holdings_over_time()
-        for date, equity in self.equity_curve['equity'].items():
-            holding_info = holdings.get(date, {})
-            holdings_str = self._format_holdings(holding_info)
-            hover_text = f"Date: {date.strftime('%Y-%m-%d')}<br>" \
-                            f"Equity: ${equity:,.2f}<br>" \
-                            f"Holdings:<br>{holdings_str}"
-            hover_texts.append(hover_text)
-        return hover_texts
-
-    def _generate_drawdown_hover_text(self) -> List[str]:
-        """
-        Generate hover text for drawdown points.
-        """
-        hover_texts = []
-        for date, drawdown in self.drawdown_series.items():
-            hover_text = f"Date: {date.strftime('%Y-%m-%d')}<br>" \
-                            f"Drawdown: {drawdown:.2f}%"
-            hover_texts.append(hover_text)
-        return hover_texts
-
-    def _generate_trade_hover_text(self, trade: Any) -> str:
-        """
-        Generate hover text for individual trades.
-        """
-        trade_info = (
-            f"Trade Type: {'Option' if trade.instrument.is_option else 'Stock'}<br>"
-            f"Action: {'Buy' if trade.quantity > 0 else 'Sell'}<br>"
-            f"Ticker: {trade.instrument.ticker}<br>"
-            f"Quantity: {trade.quantity}<br>"
-            f"Price: ${trade.entry_price:,.2f}<br>"
-            f"P&L: ${trade.pnl:,.2f}"
-        )
-        return trade_info
-
     def _compute_holdings_over_time(self) -> Dict[pd.Timestamp, Dict[str, Any]]:
         """
-        Compute current holdings at each date in the equity curve.
-        Returns a dictionary mapping dates to holdings.
+        Compute current holdings at each date in the equity curve, excluding expired options.
         """
         holdings = {}
         current_holdings = {}
@@ -225,36 +344,172 @@ class BacktestResults:
             while trade_idx < num_trades and sorted_trades[trade_idx].entry_time <= date:
                 trade = sorted_trades[trade_idx]
                 ticker = trade.instrument.ticker
-                if ticker not in current_holdings:
-                    current_holdings[ticker] = {'quantity': 0, 'instrument': trade.instrument}
-                current_holdings[ticker]['quantity'] += trade.quantity
-                # Remove the holding if quantity is zero
-                if current_holdings[ticker]['quantity'] == 0:
-                    del current_holdings[ticker]
+
+                # Handle options
+                if trade.instrument.is_option:
+                    # Skip if option is already expired
+                    if trade.instrument.expiration <= date:
+                        trade_idx += 1
+                        continue
+
+                    ticker = trade.instrument.format_option_ticker()
+                    if ticker not in current_holdings:
+                        current_holdings[ticker] = {
+                            'quantity': 0,
+                            'instrument': trade.instrument,
+                            'avg_price': 0,
+                            'cost_basis': 0
+                        }
+
+                    position = current_holdings[ticker]
+                    old_quantity = position['quantity']
+                    new_quantity = old_quantity + trade.quantity
+
+                    if abs(trade.quantity) > 0:
+                        old_cost = position['avg_price'] * abs(old_quantity)
+                        new_cost = trade.entry_price * abs(trade.quantity)
+                        position['cost_basis'] = old_cost + new_cost
+                        if new_quantity != 0:
+                            position['avg_price'] = position['cost_basis'] / abs(new_quantity)
+
+                    position['quantity'] = new_quantity
+
+                    if new_quantity == 0:
+                        del current_holdings[ticker]
+
+                else:
+                    # Handle stocks
+                    if ticker not in current_holdings:
+                        current_holdings[ticker] = {
+                            'quantity': 0,
+                            'instrument': trade.instrument,
+                            'avg_price': 0,
+                            'cost_basis': 0
+                        }
+
+                    position = current_holdings[ticker]
+                    old_quantity = position['quantity']
+                    new_quantity = old_quantity + trade.quantity
+
+                    if trade.quantity > 0:
+                        old_cost = position['avg_price'] * abs(old_quantity)
+                        new_cost = trade.entry_price * trade.quantity
+                        position['cost_basis'] = old_cost + new_cost
+                        if new_quantity != 0:
+                            position['avg_price'] = position['cost_basis'] / abs(new_quantity)
+
+                    position['quantity'] = new_quantity
+
+                    if new_quantity == 0:
+                        del current_holdings[ticker]
+
                 trade_idx += 1
+
+            # Clean up expired options before recording holdings
+            current_holdings = {
+                ticker: info for ticker, info in current_holdings.items()
+                if not info['instrument'].is_option or info['instrument'].expiration > date
+            }
+
             # Record current holdings
             holdings[date] = current_holdings.copy()
+
         return holdings
+
+    def _generate_trade_hover_text(self, trade: Any) -> str:
+        """
+        Generate hover text for individual trades.
+        """
+        trade_info = (
+            f"Trade Type: {'Option' if trade.instrument.is_option else 'Stock'}<br>"
+            f"Action: {'Buy' if trade.quantity > 0 else 'Sell'}<br>"
+            f"Ticker: {trade.instrument.ticker}<br>"
+            f"Quantity: {abs(trade.quantity)}<br>"
+            f"Price: ${trade.entry_price:,.2f}<br>"
+            f"P&L: ${trade.pnl:,.2f}"
+        )
+        if trade.instrument.is_option:
+            trade_info += f"<br>Strike: ${trade.instrument.strike:,.2f}<br>"
+            trade_info += f"Expiration: {trade.instrument.expiration.strftime('%Y-%m-%d')}"
+        return trade_info
+
+    def _generate_hover_text(self, dates: pd.DatetimeIndex) -> List[str]:
+        """
+        Generate hover text for equity curve points.
+        """
+        hover_texts = []
+        holdings = self._compute_holdings_over_time()
+
+        for date in dates:
+            equity = self.equity_curve.loc[date, 'equity']
+            holding_info = holdings.get(date, {})
+            holdings_str = self._format_holdings(holding_info)
+            hover_text = (
+                f"Time: {date.strftime('%Y-%m-%d %H:%M')}<br>"
+                f"Equity: ${equity:,.2f}<br>"
+                f"Holdings:<br>{holdings_str}"
+            )
+            hover_texts.append(hover_text)
+        return hover_texts
+
+    def _generate_drawdown_hover_text(self, drawdown_series: pd.Series) -> List[str]:
+        """
+        Generate hover text for drawdown points.
+        """
+        hover_texts = []
+        for date, drawdown in drawdown_series.items():
+            hover_text = (
+                f"Time: {date.strftime('%Y-%m-%d %H:%M')}<br>"
+                f"Drawdown: {(drawdown * 100):.2f}%"
+            )
+            hover_texts.append(hover_text)
+        return hover_texts
 
     def _format_holdings(self, holdings: Dict[str, Any]) -> str:
         """
-        Format holdings dictionary into a readable string for hover text.
+        Format holdings dictionary into a readable string for hover text,
+        including position details.
         """
         if not holdings:
             return "None"
+
         holdings_str = ""
         for ticker, info in holdings.items():
             instrument = info['instrument']
             quantity = info['quantity']
+            avg_price = info['avg_price']
+
             if instrument.is_option:
                 option_type = instrument.instrument_type.value
                 strike = instrument.strike
                 expiration = instrument.expiration.strftime('%Y-%m-%d')
-                holdings_str += f"{ticker}: {quantity} {option_type} @ ${strike} Exp: {expiration}<br>"
+                holdings_str += (
+                    f"{instrument.ticker}: {quantity} {option_type} @ ${strike} "
+                    f"(Avg: ${avg_price:.2f}) Exp: {expiration}<br>"
+                )
             else:
-                holdings_str += f"{ticker}: {quantity} shares<br>"
+                holdings_str += (
+                    f"{ticker}: {quantity} shares @ ${avg_price:.2f}<br>"
+                )
         return holdings_str
 
+    def _is_market_hours(self, timestamp) -> bool:
+        """
+        Check if the given timestamp is during market hours (9:30 AM - 4:00 PM ET, weekdays).
+        Works with both datetime and pandas Timestamp objects.
+        """
+        # Convert datetime to pandas Timestamp if needed
+        if not isinstance(timestamp, pd.Timestamp):
+            timestamp = pd.Timestamp(timestamp)
+
+        if timestamp.weekday() >= 5:  # Weekend
+            return False
+
+        minutes_since_midnight = timestamp.hour * 60 + timestamp.minute
+        market_open = 9 * 60 + 30   # 9:30 AM
+        market_close = 16 * 60      # 4:00 PM
+
+        return market_open <= minutes_since_midnight <= market_close
 
     def analyze_options_performance(self) -> pd.DataFrame:
         """
@@ -337,7 +592,7 @@ class BacktestResults:
 
         # Separate trades by type
         options_trades = [t for t in self.trades if t.instrument.is_option]
-        stock_trades = [t for t in self.trades if t.instrument.is_option is False]
+        stock_trades = [t for t in self.trades if not t.instrument.is_option]
 
         # Calculate options performance metrics
         if options_trades:
@@ -346,15 +601,16 @@ class BacktestResults:
             long_options = [t for t in options_trades if t.quantity > 0]
             short_options = [t for t in options_trades if t.quantity < 0]
 
-            # Use realized P&L from trades
-            option_pnls = [t.realized_pnl for t in options_trades if hasattr(t, 'realized_pnl') and t.realized_pnl is not None]
+            # Use realized P&L from closing trades
+            option_pnls = [t.pnl for t in options_trades]
 
         summary = [
             "Backtest Performance Summary",
             "=" * 50,
             f"Initial Capital: ${self.initial_capital:,.2f}",
             f"Final Capital: ${self.final_capital:,.2f}",
-            f"Total Return: {self.total_return:.2%}",
+            f"Net P&L: ${self.final_capital - self.initial_capital:,.2f}",
+            f"Total Return: {(self.final_capital - self.initial_capital) / self.initial_capital:.2%}",
             f"Annualized Return: {self.annualized_return:.2%}",
             "",
             "Risk Metrics:",
@@ -387,11 +643,64 @@ class BacktestResults:
                 f"Assignment Rate: {len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.2%}"
             ])
 
+        # Calculate total transaction costs
+        total_commission = sum(t.transaction_costs for t in self.trades)
+        total_slippage = sum(t.transaction_costs for t in self.trades)  # Assuming slippage is stored similarly
+        # Note: If slippage is stored differently, adjust accordingly
+
         summary.extend([
             "",
             "Transaction Costs:",
-            f"Total Costs: ${sum(t.transaction_costs for t in self.trades):,.2f}",
-            f"Cost % of AUM: {sum(t.transaction_costs for t in self.trades)/self.initial_capital:.2%}"
+            f"Total Costs: ${total_commission + total_slippage:,.2f}",
+            f"Cost % of AUM: {(total_commission + total_slippage)/self.initial_capital:.2%}"
         ])
 
         return "\n".join(summary)
+
+    def _prepare_summary_data(self) -> List[List[str]]:
+        """Prepare summary data for the performance panel."""
+        risk_metrics = self.risk_metrics()
+        options_trades = [t for t in self.trades if t.instrument.is_option]
+        stock_trades = [t for t in self.trades if not t.instrument.is_option]
+
+        # Calculate options metrics if applicable
+        options_metrics = {}
+        if options_trades:
+            calls = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.CALL_OPTION]
+            puts = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.PUT_OPTION]
+            option_pnls = [t.pnl for t in options_trades]
+            options_metrics.update({
+                'Calls/Puts': f"{len(calls)}/{len(puts)}",
+                'Option P&L': f"${sum(option_pnls):,.2f}",
+                'Option Win Rate': f"{len([p for p in option_pnls if p > 0])/len(option_pnls):.1%}"
+            })
+
+        # Prepare summary data
+        metrics = [
+            ['Performance', ''],  # Section header
+            ['Final Capital', f"${self.final_capital:,.2f}"],
+            ['Net P&L', f"${self.net_pnl:,.2f}"],
+            ['Total Return', f"{self.net_pnl / self.initial_capital:.1%}"],
+            ['Ann. Return', f"{self.annualized_return:.1%}"],
+            ['', ''],  # Spacing
+            ['Risk Metrics', ''],  # Section header
+            ['Sharpe Ratio', f"{self.sharpe_ratio:.2f}"],
+            ['Sortino Ratio', f"{self.sortino_ratio:.2f}"],
+            ['Max Drawdown', f"{self.max_drawdown:.1%}"],
+            ['VaR (95%)', f"{risk_metrics['var_95']:.1%}"],
+            ['', ''],  # Spacing
+            ['Trading Stats', ''],  # Section header
+            ['Total Trades', str(len(self.trades))],
+            ['Win Rate', f"{self.win_rate:.1%}"],
+            ['Avg Duration', f"{np.mean([t.duration_hours for t in self.trades]):.1f}h"],
+        ]
+
+        # Add options metrics if present
+        if options_metrics:
+            metrics.extend([
+                ['', ''],  # Spacing
+                ['Options', ''],  # Section header
+            ])
+            metrics.extend([[k, v] for k, v in options_metrics.items()])
+
+        return metrics

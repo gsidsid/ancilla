@@ -59,6 +59,7 @@ class BacktestEngine:
         self.fill_ratios = []  # Track fill rates
         self.slippage_costs = []  # Track slippage
         self.commission_costs = []  # Track commissions
+        self.total_transaction_costs = [] # Track total transaction costs for reconciliation
 
         # Initialize strategy
         self.strategy.initialize(self.portfolio, self)
@@ -163,6 +164,18 @@ class BacktestEngine:
             return False
 
         market_data_ticker = market_data[instrument.underlying_ticker]
+        if instrument.is_option:
+            # Get market data for the option ticker
+            option_ticker = instrument.format_option_ticker()
+            bars = self.data_provider.get_intraday_bars(
+                ticker=option_ticker,
+                start_date=timestamp - timedelta(hours=1),
+                end_date=timestamp,
+                interval='1hour'
+            )
+            data = bars.iloc[-1].to_dict() if bars is not None and not bars.empty else {}
+            market_data[option_ticker] = data
+            market_data_ticker = data
 
         # Get current price/target price to execute with
         price = market_data_ticker.get('close', 0)
@@ -222,8 +235,13 @@ class BacktestEngine:
             return False
 
         # Calculate total transaction costs
-        slippage = abs(execution_price - price) * abs(quantity)
+
+        slippage = abs(price * price_impact) * abs(quantity)  # Calculate slippage based on percentage impact
+        if instrument.is_option:
+            slippage *= instrument.get_multiplier()
         total_transaction_costs = commission + slippage
+
+        print()
 
         # Execute the order based on whether it's opening or closing a position
         success = False
@@ -306,6 +324,7 @@ class BacktestEngine:
             self.fill_ratios.append(fill_probability)
             self.slippage_costs.append(slippage)
             self.commission_costs.append(commission)
+            self.total_transaction_costs.append(total_transaction_costs)
 
             # Log execution
             self.logger.info(
@@ -374,6 +393,10 @@ class BacktestEngine:
         if not self._validate_option_order(option, timestamp):
             return False
 
+        # When we handle an option position, we should add the option ticker to the list of tickers
+        if option.format_option_ticker() not in self.tickers:
+            self.tickers.append(option.format_option_ticker())
+
         return self._execute_instrument_order(
             instrument=option,
             quantity=abs(quantity),
@@ -391,6 +414,10 @@ class BacktestEngine:
         """Wrapper for selling options with validation."""
         if not self._validate_option_order(option, timestamp):
             return False
+
+        # When we handle an option position, we should add the option ticker to the list of tickers
+        if option.format_option_ticker() not in self.tickers:
+            self.tickers.append(option.format_option_ticker())
 
         return self._execute_instrument_order(
             instrument=option,
@@ -462,10 +489,21 @@ class BacktestEngine:
                     )
 
                     if bars is not None and not bars.empty:
-                        # Use the last bar's data for the current hour
-                        data = bars.iloc[-1].to_dict()
-                        market_data[ticker] = data
-                        has_data = True
+                        # Instead of looking for exact hour match, find the closest bar
+                        # that falls within this hour window
+                        window_start = current_time
+                        window_end = current_time + timedelta(hours=1)
+
+                        # Filter bars that fall within our window
+                        window_bars = bars[
+                            (bars.index >= window_start) &
+                            (bars.index < window_end)
+                        ]
+
+                        if not window_bars.empty:
+                            # Take the first bar in the window
+                            market_data[ticker] = window_bars.iloc[0].to_dict()
+                            has_data = True
 
                 if not has_data:
                     consecutive_no_data += 1
@@ -479,7 +517,6 @@ class BacktestEngine:
                     consecutive_no_data = 0
 
                     # Process market data in strategy
-                    # Override the strategy logger to include the timestamp
                     strategyCurrentTimeFormatter = logging.Formatter(
                         fmt=f"ancilla.{self.strategy.name} - [{
                             current_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -496,42 +533,23 @@ class BacktestEngine:
                     current_prices = {
                         ticker: data['close'] for ticker, data in market_data.items()
                     }
+
                     self.portfolio.update_equity(current_time, current_prices)
 
                 current_time += timedelta(hours=1)
 
             self._process_option_expiration(current_date, market_close)
-
             current_date += timedelta(days=1)
 
-        # Close remaining positions (rest of the method remains the same)
-        positions_to_close = list(self.portfolio.positions.items())
-        for ticker, position in positions_to_close:
-            # Use the final hour's data for closing positions
-            bars = self.data_provider.get_intraday_bars(
-                ticker=ticker,
-                start_date=current_date - timedelta(hours=1),
-                end_date=current_date,
-                interval='1hour'
-            )
+        # Close remaining positions
+        self._close_all_positions(current_date)
 
-            if bars is not None and not bars.empty:
-                market_data = bars.iloc[-1].to_dict()
-                success = self.portfolio.close_position(
-                    instrument=position.instrument,
-                    price=market_data['close'],
-                    timestamp=current_date
-                )
-                if success:
-                    self.logger.info(
-                        f"Closed remaining position in {ticker} @ {market_data['close']:.2f}"
-                    )
-
-        # Calculate performance metrics
+        # Rest of the method remains the same...
         metrics = self._calculate_results()
 
         # Create and return structured results
         results = BacktestResults(
+            strategy_name=self.strategy.name,
             initial_capital=self.initial_capital,
             final_capital=metrics['final_capital'],
             total_return=metrics['total_return'],
@@ -547,16 +565,29 @@ class BacktestEngine:
             equity_curve=metrics['equity_curve'],
             drawdown_series=metrics['drawdown_series'],
             daily_returns=metrics['daily_returns'],
+            net_pnl=metrics['net_pnl'],
             trades=self.portfolio.trades
         )
 
         # Log summary
         self.logger.info("\n" + results.summarize())
 
+        self.logger.info("Trade metrics:")
+        for trade in self.portfolio.trades:
+            self.logger.info(trade.get_metrics())
+
+        self.logger.info("New opening trade addition metrics:")
+        self.logger.info("net_pnl - " + str(metrics['net_pnl']))
         return results
 
     def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
         """Handle option expiration and assignments."""
+        # Check if we're at market close (after 4 PM ET)
+        is_market_close = (expiration_time.hour >= 16)
+        if not is_market_close:
+            return
+
+        # Get expiring positions
         option_positions = [
             pos for pos in self.portfolio.positions.values()
             if pos.instrument.is_option and pos.instrument.expiration.date() == current_date.date()
@@ -565,6 +596,15 @@ class BacktestEngine:
         for position in option_positions:
             option = position.instrument
             ticker = option.format_option_ticker()
+
+            self.logger.info(
+                f"Processing expiration for {ticker}:\n"
+                f"  Position direction: {'Long' if position.quantity > 0 else 'Short'}\n"
+                f"  Option type: {option.instrument_type}\n"
+                f"  Strike: ${option.strike:.2f}\n"
+                f"  Underlying price: ${underlying_close:.2f}\n"
+                f"  Intrinsic value: ${intrinsic_value:.2f}"
+            )
 
             # Get underlying price
             underlying_ticker = option.underlying_ticker
@@ -597,18 +637,30 @@ class BacktestEngine:
 
             # Calculate transaction costs for potential assignment
             transaction_costs = 0
+
+            # Handle assignment
+            self.logger.info(
+                f"Attempting assignment for {ticker}:\n"
+                f"  Assignment quantity: {assignment_quantity}\n"
+                f"  Direction: {'Buy' if is_buying else 'Sell'} stock\n"
+                f"  Strike price: ${option.strike:.2f}"
+            )
             if intrinsic_value > 0:
                 assignment_quantity = abs(position.quantity) * 100
-                transaction_costs = self.market_simulator.calculate_commission(
-                    option.strike * assignment_quantity,
-                    assignment_quantity,
-                    'stock'
-                )
 
-                # Handle assignment
-                if option.instrument_type == InstrumentType.CALL_OPTION and position.quantity < 0:
-                    # For covered calls, execute stock sale at strike
+                # For calls: the holder buys stock at strike, writer sells stock at strike
+                if option.instrument_type == InstrumentType.CALL_OPTION:
                     self.sell_stock(
+                        ticker=underlying_ticker,
+                        quantity=assignment_quantity,
+                        timestamp=expiration_time,
+                        market_data={underlying_ticker: {'close': underlying_close}},
+                        is_assignment=True
+                    )
+
+                # For puts: the holder sells stock at strike, writer buys stock at strike
+                else:  # PUT_OPTION
+                    self.buy_stock(
                         ticker=underlying_ticker,
                         quantity=assignment_quantity,
                         timestamp=expiration_time,
@@ -648,6 +700,7 @@ class BacktestEngine:
             self.portfolio.trades.append(trade)
             del self.portfolio.positions[ticker]
 
+
     def _calculate_results(self) -> Dict[str, Any]:
         """Calculate comprehensive backtest results."""
         # Convert equity curve to dataframe
@@ -674,16 +727,39 @@ class BacktestEngine:
         stock_metrics = calculate_trade_metrics(stock_trades)
 
         # Calculate total transaction costs
-        total_commission = sum(t.transaction_costs for t in self.portfolio.trades if t.instrument.is_option)
-        total_slippage = sum(t.transaction_costs for t in self.portfolio.trades if t.instrument.is_option)
-        # Alternatively, if slippage and commissions are tracked separately
+        # Since transaction costs are already subtracted in trade.pnl, avoid double-counting
         total_commission = sum(self.commission_costs)
         total_slippage = sum(self.slippage_costs)
+
+        # Calculate net opening cash flows
+        net_opening_cash_flows = sum(self.portfolio.opening_cash_flows)
+
+        realized_pnl = sum(t.pnl for t in self.portfolio.trades)  # Already includes commissions
+        total_slippage = sum(self.slippage_costs)  # Add slippage separately
+        expected_final_capital = self.initial_capital + realized_pnl - (total_slippage * 2)
+
+
+        actual_final_capital = self.portfolio.cash + self.portfolio.get_position_value()
+
+        # Compare with actual final capital
+        if not np.isclose(expected_final_capital, actual_final_capital, atol=1e-2):
+            self.logger.warning(
+                f"Discrepancy detected:\n"
+                f"Expected Final Capital: {expected_final_capital}\n"
+                f"Actual Final Capital: {actual_final_capital}\n"
+                f"Realized PnL: {realized_pnl}\n"
+                f"Initial Capital: {self.initial_capital}"
+            )
+
+            self.logger.info(f"All commission costs: {self.commission_costs}")
+            self.logger.info(f"All slippage costs: {self.slippage_costs}")
+            self.logger.info(f"All total transaction costs: {self.total_transaction_costs}")
 
         # Compile results
         results = {
             'initial_capital': self.initial_capital,
-            'final_capital': equity_df['equity'].iloc[-1],
+            'final_capital': actual_final_capital,
+            'net_pnl': actual_final_capital - self.initial_capital,
             **return_metrics,
             **drawdown_metrics,
             'options_metrics': options_metrics,
@@ -720,3 +796,66 @@ class BacktestEngine:
 
         results.update(risk_metrics)
         return results
+
+
+    def _close_all_positions(self, current_date: datetime):
+        self.logger.info(f"Starting to close all positions at {current_date}")
+        positions_to_close = list(self.portfolio.positions.items())
+        self.logger.info(f"Found {len(positions_to_close)} positions to close:")
+        for t, p in positions_to_close:
+            self.logger.info(f"  {t}: {p.quantity} units @ {p.entry_price}")
+
+        for ticker, position in positions_to_close:
+            # Use the actual position ticker for lookup, not the underlying
+            lookup_ticker = ticker  # This is the key change
+
+            self.logger.info(f"Attempting to close {ticker} using lookup ticker {lookup_ticker}")
+            self.logger.info(f"Fetching market data from {current_date - timedelta(hours=1)} to {current_date}")
+
+            bars = self.data_provider.get_intraday_bars(
+                ticker=lookup_ticker,
+                start_date=current_date - timedelta(days=1),
+                end_date=current_date,
+                interval='1hour'
+            )
+
+            if bars is None or bars.empty:
+                self.logger.warning(f"No market data found for {lookup_ticker} - falling back to last known price")
+                closing_price = position.entry_price
+            else:
+                self.logger.info(f"Found market data for {lookup_ticker}: {bars.tail(1)}")
+                market_data = bars.iloc[-1].to_dict()
+                closing_price = market_data['close']
+
+            # Calculate value (this part remains the same)
+            if position.instrument.is_option:
+                multiplier = position.instrument.get_multiplier()
+                value = closing_price * multiplier
+            else:
+                value = closing_price
+
+            self.logger.info(f"Attempting to close {ticker} @ {closing_price:.2f}")
+
+            success = self.portfolio.close_position(
+                instrument=position.instrument,
+                price=closing_price,
+                timestamp=current_date,
+                transaction_costs=self.market_simulator.calculate_commission(
+                    closing_price,
+                    position.quantity,
+                    'option' if position.instrument.is_option else 'stock'
+                )
+            )
+
+            if success:
+                self.logger.info(f"Successfully closed position in {ticker} @ {closing_price:.2f}")
+            else:
+                self.logger.error(f"Failed to close position in {ticker}")
+
+        remaining = list(self.portfolio.positions.items())
+        if remaining:
+            self.logger.error("Failed to close all positions. Remaining positions:")
+            for t, p in remaining:
+                self.logger.error(f"  {t}: {p.quantity} units @ {p.entry_price}")
+        else:
+            self.logger.info("Successfully closed all positions")
