@@ -80,78 +80,6 @@ class BacktestEngine:
             'volume_participation': []
         }
 
-    def _get_market_data(self, ticker: str, date: datetime) -> Optional[Dict[str, Any]]:
-        """Get market data with caching and enhanced analytics."""
-        cache_key = (ticker, date.date())
-        if cache_key not in self._market_data_cache:
-            bars = self.data_provider.get_daily_bars(ticker, date, date)
-            if bars is not None and not bars.empty:
-                data = bars.iloc[0].to_dict()
-
-                # Add enhanced analytics
-                data['atr'] = self._calculate_atr(ticker, date)
-                data['avg_spread'] = self._estimate_spread(data)
-                data['liquidity_score'] = self._calculate_liquidity_score(data)
-
-                self._market_data_cache[cache_key] = data
-            else:
-                self._market_data_cache[cache_key] = None
-        return self._market_data_cache[cache_key]
-
-    def _calculate_atr(self, ticker: str, date: datetime, window: int = 14) -> float:
-        """Calculate Average True Range for volatility estimation."""
-        cache_key = (ticker, date.date())
-        if cache_key not in self._atr_cache:
-            end_date = date
-            start_date = end_date - timedelta(days=window * 2)  # Extra days for calculation
-
-            bars = self.data_provider.get_daily_bars(ticker, start_date, end_date)
-            if bars is not None and not bars.empty:
-                high = bars['high']
-                low = bars['low']
-                close = bars['close']
-
-                tr1 = high - low
-                tr2 = abs(high - close.shift(1))
-                tr3 = abs(low - close.shift(1))
-
-                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                atr = pd.Series(tr).rolling(window=window).mean()
-                self._atr_cache[cache_key] = atr
-            else:
-                self._atr_cache[cache_key] = None
-
-        return self._atr_cache[cache_key]
-
-    def _estimate_spread(self, market_data: Dict[str, Any]) -> float:
-        """Estimate average spread from OHLC data."""
-        high = market_data.get('high', 0)
-        low = market_data.get('low', 0)
-        volume = market_data.get('volume', 0)
-        price = market_data.get('close', 0)
-
-        if price == 0 or volume == 0:
-            return 0.0
-
-        # Base spread on price level and volume
-        base_spread = (high - low) / (2 * price)  # Half the day's range
-        volume_factor = np.log10(max(volume, 1))
-        return base_spread / volume_factor
-
-    def _calculate_liquidity_score(self, market_data: Dict[str, Any]) -> float:
-        """Calculate a liquidity score (0-1) based on volume and price."""
-        volume = market_data.get('volume', 0)
-        price = market_data.get('close', 0)
-        dollar_volume = volume * price
-
-        # Score based on dollar volume (adjust thresholds as needed)
-        if dollar_volume == 0:
-            return 0.0
-        return min(1.0, np.log10(dollar_volume) / 7.0)  # 7.0 ~ $10M daily volume
-
-    # First, ensure we have the ExecutionDetails dataclass and improved MarketSimulator from earlier
-    # Then use this execution method:
-
     def _execute_instrument_order(
         self,
         instrument: Instrument,
@@ -442,7 +370,7 @@ class BacktestEngine:
             current_time = market_open
             while current_time <= market_close:
                 # Get intraday market data for all tickers
-                market_data = {}
+                market_data = self.market_data
                 has_data = False
 
                 # Expand self.tickers to include option tickers for any open positions
@@ -450,6 +378,14 @@ class BacktestEngine:
                 for position in open_positions:
                     if position.instrument.is_option and position.instrument.format_option_ticker() not in self.tickers:
                         self.tickers.append(position.instrument.format_option_ticker())
+
+                # Remove any tickers for expired options
+                for ticker in self.tickers:
+                    if len(ticker) > 6:
+                        option = Option.from_option_ticker(ticker)
+                        if option.expiration.date() < current_date.date():
+                            self.tickers.remove(ticker)
+                            market_data = {k: v for k, v in market_data.items() if k != ticker}
 
                 for ticker in self.tickers:
                     # Get 1-hour bars for the current hour
@@ -505,9 +441,8 @@ class BacktestEngine:
 
                     # Update portfolio equity curve
                     current_prices = {
-                        ticker: data['close'] for ticker, data in market_data.items()
+                        ticker: data['close'] for ticker, data in self.market_data.items()
                     }
-
                     self.portfolio.update_equity(current_time, current_prices)
 
                 current_time += timedelta(hours=1)

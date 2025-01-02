@@ -107,19 +107,22 @@ class Option(Instrument):
                 raise ValueError("Option ticker must start with 'O:' prefix.")
 
             # Extract ticker by filtering out non-alphabetic characters
-            ticker = ''.join(filter(str.isalpha, details))
+            ticker = ''
+            i = 0
+            while i < len(details) and details[i].isalpha():
+                ticker += details[i]
+                i += 1
 
             # Extract expiration date (next 6 characters after ticker)
-            start = len(ticker)
-            date_str = details[start:start + 6]
+            date_str = details[i:i + 6]
             expiration = datetime.strptime(f"20{date_str}", "%Y%m%d")
 
             # Extract option type (1 character)
-            option_type_char = details[start + 6]
+            option_type_char = details[i + 6]
             option_type = InstrumentType.CALL_OPTION if option_type_char == 'C' else InstrumentType.PUT_OPTION
 
             # Extract strike price (remaining characters)
-            strike_str = details[start + 7:]
+            strike_str = details[i + 7:]
             strike = float(strike_str) / 1000.0
 
             return cls(

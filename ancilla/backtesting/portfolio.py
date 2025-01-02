@@ -246,6 +246,7 @@ class Portfolio:
         if remaining_quantity == 0:
             # Fully close the position
             del self.positions[ticker]
+
             position_type = 'option' if instrument.is_option else 'stock'
             self.logger.position_close(
                 timestamp=timestamp,
