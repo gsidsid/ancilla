@@ -11,6 +11,9 @@ class InstrumentType(Enum):
     CALL_OPTION = "call_option"
     PUT_OPTION = "put_option"
 
+    def __str__(self):
+        return self.value
+
 
 @dataclass
 class Instrument:

@@ -350,115 +350,185 @@ class BacktestEngine:
             return False
 
     def run(self) -> BacktestResults:
-        """Run the backtest with hourly resolution and return structured results."""
+        """Run the backtest with hourly resolution using weekly batched data requests."""
         current_date = self.start_date
         consecutive_no_data = 0
         max_no_data_days = 5
 
+        eastern_tz = pytz.timezone('US/Eastern')
+        utc_tz = pytz.UTC
+
+        # Ensure initial current_date is timezone aware in Eastern
+        if current_date.tzinfo is None:
+            current_date = eastern_tz.localize(current_date)
+        elif current_date.tzinfo != eastern_tz:
+            current_date = current_date.astimezone(eastern_tz)
+
         while current_date <= self.end_date:
-            # Check if it's a trading day
-            market_hours = self.data_provider.get_market_hours(current_date)
-            if not market_hours:
-                current_date += timedelta(days=1)
-                continue
+            # Calculate the end of the current week (Friday or end_date, whichever comes first)
+            days_until_friday = (4 - current_date.weekday()) % 7
+            week_end = min(
+                current_date + timedelta(days=days_until_friday),
+                self.end_date
+            )
 
-            # Get market open and close times for the day
-            market_open = market_hours['market_open']
-            market_close = market_hours['market_close']
+            # Pre-fetch a week's worth of intraday data for all tickers
+            weekly_data = {}
 
-            # Iterate through each hour of the trading day
-            current_time = market_open
-            while current_time <= market_close:
-                # Get intraday market data for all tickers
-                market_data = self.market_data
-                has_data = False
+            # Update tickers list with options from open positions
+            open_positions = self.portfolio.positions.values()
+            for position in open_positions:
+                if position.instrument.is_option:
+                    option_ticker = position.instrument.format_option_ticker()
+                    if option_ticker not in self.tickers:
+                        self.tickers.append(option_ticker)
 
-                # Expand self.tickers to include option tickers for any open positions
-                open_positions = self.portfolio.positions.values()
-                for position in open_positions:
-                    if position.instrument.is_option and position.instrument.format_option_ticker() not in self.tickers:
-                        self.tickers.append(position.instrument.format_option_ticker())
+            # Remove expired options from ticker list
+            active_tickers = []
+            for ticker in self.tickers:
+                if len(ticker) > 6:  # Is an option ticker
+                    option = Option.from_option_ticker(ticker)
+                    if option.expiration.date() >= current_date.date():
+                        active_tickers.append(ticker)
+                    else:
+                        # Also remove from market_data if expired
+                        if ticker in self.market_data:
+                            del self.market_data[ticker]
+                else:
+                    active_tickers.append(ticker)
 
-                # Remove any tickers for expired options
-                for ticker in self.tickers:
-                    if len(ticker) > 6:
-                        option = Option.from_option_ticker(ticker)
-                        if option.expiration.date() < current_date.date():
-                            self.tickers.remove(ticker)
-                            market_data = {k: v for k, v in market_data.items() if k != ticker}
+            # Convert dates to UTC for data fetching
+            fetch_start_utc = current_date.astimezone(utc_tz)
+            fetch_end_utc = (week_end + timedelta(days=1)).astimezone(utc_tz)
 
-                for ticker in self.tickers:
-                    # Get 1-hour bars for the current hour
-                    bars = self.data_provider.get_intraday_bars(
-                        ticker=ticker,
-                        start_date=current_time,
-                        end_date=current_time + timedelta(hours=1),
-                        interval='1hour'
-                    )
+            # Fetch weekly data for each active ticker
+            for ticker in active_tickers:
+                bars = self.data_provider.get_intraday_bars(
+                    ticker=ticker,
+                    start_date=fetch_start_utc,
+                    end_date=fetch_end_utc,
+                    interval='1hour'
+                )
+                if bars is not None and not bars.empty:
+                    weekly_data[ticker] = bars
 
-                    if bars is not None and not bars.empty:
-                        # Instead of looking for exact hour match, find the closest bar
-                        # that falls within this hour window
+            # Process each day in the week
+            while current_date <= week_end:
+                # Get market hours in UTC
+                market_hours = self.data_provider.get_market_hours(current_date.astimezone(utc_tz))
+                if not market_hours:
+                    current_date += timedelta(days=1)
+                    continue
+
+                market_open = market_hours['market_open']
+                market_close = market_hours['market_close']
+
+                # Convert string timestamps if needed and ensure UTC
+                if isinstance(market_open, str):
+                    market_open = datetime.fromisoformat(market_open.replace('Z', '+00:00'))
+                if isinstance(market_close, str):
+                    market_close = datetime.fromisoformat(market_close.replace('Z', '+00:00'))
+
+                if market_open.tzinfo is None:
+                    market_open = utc_tz.localize(market_open)
+                if market_close.tzinfo is None:
+                    market_close = utc_tz.localize(market_close)
+
+                # Process each hour of the trading day
+                current_time = market_open
+                while current_time <= market_close:
+                    market_data = {}
+                    has_data = False
+
+                    # Extract relevant data for current hour from weekly data
+                    for ticker in active_tickers:
+                        if ticker not in weekly_data:
+                            continue
+
+                        bars = weekly_data[ticker]
                         window_start = current_time
                         window_end = current_time + timedelta(hours=1)
 
-                        # Filter bars that fall within our window
                         window_bars = bars[
                             (bars.index >= window_start) &
                             (bars.index < window_end)
                         ]
 
                         if not window_bars.empty:
-                            # Take the first bar in the window
                             market_data[ticker] = window_bars.iloc[0].to_dict()
                             has_data = True
 
-                if not has_data:
-                    consecutive_no_data += 1
-                    if consecutive_no_data >= max_no_data_days * 6.5:  # Adjust for ~6.5 trading hours per day
-                        self.logger.warning(
-                            f"No market data for {max_no_data_days} consecutive days "
-                            f"as of {current_time}"
-                        )
+                    if not has_data:
+                        consecutive_no_data += 1
+                        if consecutive_no_data >= max_no_data_days * 6.5:
+                            self.logger.warning(
+                                f"No market data for {max_no_data_days} consecutive days "
+                                f"as of {current_time.astimezone(eastern_tz)}"
+                            )
+                            consecutive_no_data = 0
+                    else:
                         consecutive_no_data = 0
-                else:
-                    consecutive_no_data = 0
 
-                    # Process market data in strategy
-                    # Log with eastern time
-                    eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
-                    strategyCurrentTimeFormatter = logging.Formatter(
-                        fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
-                    )
-                    self.strategy.logger.handlers[0].setFormatter(strategyCurrentTimeFormatter)
-                    self.strategy.logger.handlers[1].setFormatter(strategyCurrentTimeFormatter)
+                        # Convert current time to Eastern for display
+                        eastern_time = current_time.astimezone(eastern_tz)
+                        eastern_time_12_hour_format = eastern_time.strftime('%Y-%m-%d %I:%M %p')
 
-                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
-                    print(current_line, end='\r')
-                    self.market_data = market_data
-                    self.last_timestamp = current_time
-                    self.strategy.on_data(current_time, market_data)
+                        # Update strategy logger format
+                        strategy_formatter = logging.Formatter(
+                            fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
+                        )
+                        self.strategy.logger.handlers[0].setFormatter(strategy_formatter)
+                        self.strategy.logger.handlers[1].setFormatter(strategy_formatter)
 
-                    # Update portfolio equity curve
-                    current_prices = {
-                        ticker: data['close'] for ticker, data in self.market_data.items()
-                    }
-                    self.portfolio.update_equity(current_time, current_prices)
+                        # Update progress display
+                        current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
+                        print(current_line, end='\r')
 
-                current_time += timedelta(hours=1)
+                        # Merge new market data with existing market data
+                        self.market_data.update(market_data)
+                        self.last_timestamp = current_time
 
-            self._process_option_expiration(current_date, market_close)
-            current_date += timedelta(days=1)
+                        # When an order is executed in strategy.on_data(), _execute_instrument_order
+                        # will update self.market_data with fresh data. That fresh data should be
+                        # merged back into weekly_data to maintain consistency
+                        self.strategy.on_data(current_time, self.market_data)
 
-        # Close remaining positions
-        self._close_all_positions(current_date - timedelta(days=1))
+                        # After strategy execution, update weekly_data with any new data
+                        # from executed orders
+                        for ticker, data in self.market_data.items():
+                            if ticker in weekly_data:
+                                current_index = current_time
+                                # Create a new row with the updated data
+                                new_row = pd.Series(data, name=current_index)
+                                # Update the specific row in weekly_data
+                                weekly_data[ticker].loc[current_index] = new_row
 
-        # Interpret engine data
+                        # Update portfolio equity curve using merged market data
+                        current_prices = {}
+                        for ticker, data in self.market_data.items():
+                            if 'close' in data:
+                                current_prices[ticker] = data['close']
+
+                        self.portfolio.update_equity(current_time, current_prices)
+
+                    current_time += timedelta(hours=1)
+
+                # Process option expirations at end of day (using Eastern time)
+                eastern_current_date = current_date.astimezone(eastern_tz)
+                eastern_market_close = market_close.astimezone(eastern_tz)
+                self._process_option_expiration(eastern_current_date, eastern_market_close)
+
+                current_date += timedelta(days=1)
+                if current_date.tzinfo is None:
+                    current_date = eastern_tz.localize(current_date)
+
+        # Close remaining positions at end of backtest
+        final_date = (current_date - timedelta(days=1)).astimezone(eastern_tz)
+        self._close_all_positions(final_date)
+
+        # Calculate and return results
         results = BacktestResults.calculate(self)
-
-        # Log summary
         self.logger.info(results.summarize())
-
         return results
 
     def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
@@ -558,8 +628,8 @@ class BacktestEngine:
                         instrument=option,
                         price=0.0,  # Option expired worthless
                         timestamp=expiration_time,
-                        quantity=abs(position.quantity),
-                        transaction_costs=0.0  # Adjust as needed
+                        quantity=position.quantity,
+                        transaction_costs=0.0
                     )
                 else:
                     # Long option: Lose premium
@@ -570,7 +640,7 @@ class BacktestEngine:
                         price=0.0,  # Option expired worthless
                         timestamp=expiration_time,
                         quantity=position.quantity,
-                        transaction_costs=0.0  # Adjust as needed
+                        transaction_costs=0.0
                     )
 
             # Remove the option ticker from the list of tickers if fully closed

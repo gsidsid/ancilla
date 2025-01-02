@@ -552,14 +552,42 @@ class BacktestResults:
 
         return pd.DataFrame(trades_data)
 
+    from datetime import datetime, timezone
+
     def _extract_dte(self, entry_date: datetime, ticker: str) -> int:
-        """Extract days to expiration at entry from option ticker."""
+        """Extract days to expiration at entry from option ticker.
+
+        Args:
+            entry_date: Date of entry
+            ticker: Option ticker in format O:AAPL240126C00190000
+
+        Returns:
+            Number of days between entry_date and option expiration
+        """
         try:
-            # Parse expiration from O:TSLA230113C00015000 format
-            date_part = ticker.split(':')[1][4:10]  # Extract YYMMDD
+            # Parse expiration from O:AAPL240126C00190000 format
+            parts = ticker.split(':')
+            if len(parts) != 2:
+                raise ValueError(f"Invalid ticker format: {ticker}")
+
+            symbol_part = parts[1]  # AAPL240126C00190000
+            date_part = symbol_part[4:10]  # 240126
+
+            # Create timezone-naive expiry date
             expiry = datetime.strptime(f"20{date_part}", "%Y%m%d")
-            return (expiry - entry_date).days
-        except:
+
+            # If entry_date is timezone-aware, convert expiry to match
+            if entry_date.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=entry_date.tzinfo)
+            # If entry_date is timezone-naive, ensure expiry is also naive
+            elif expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
+
+            days = (expiry - entry_date).days
+            return days
+
+        except Exception as e:
+            print(f"Error processing ticker {ticker}: {str(e)}")
             return 0
 
     def risk_metrics(self) -> Dict[str, float]:
@@ -652,59 +680,122 @@ class BacktestResults:
         if summarize_trades:
             trade_summary = "\n=====================TRADES========================\n"
             # sort trades by entry time
-            self.trades.sort(key=lambda x: x.entry_time)
+            self.trades.sort(key=lambda trade: trade.entry_time)
+
             for trade in self.trades:
-                # Create a human-readable summary of all trades
-                trade_metrics = trade.get_metrics()
+                # Extract trade metrics
+                metrics = trade.get_metrics()
+                quantity = metrics.get('quantity', 0)
+                trade_type = metrics.get('type', 'unknown').lower()
+                ticker = metrics.get('ticker', 'UNKNOWN')
+                entry_time = metrics.get('entry_time')
+                exit_time = metrics.get('exit_time')
+                entry_price = metrics.get('entry_price', 0.0)
+                exit_price = metrics.get('exit_price', 0.0)
+                pnl = metrics.get('pnl', 0.0)
+                assignment = metrics.get('assignment', False)
+                exercised = metrics.get('exercised', False)
+                option_type = str(metrics.get('option_type', None))  # 'call_option' or 'put_option'
+                strike = metrics.get('strike', 0.0)
+                option_ticker = metrics.get('option_ticker', '')
+                duration_hours = metrics.get('duration_hours', 0)
 
-                # Determine if it was a buy or sell
-                action = "Bought" if trade_metrics['quantity'] > 0 else "Sold"
-                abs_quantity = abs(trade_metrics['quantity'])
+                # Determine if the trade is an option or shares
+                is_option = trade_type == 'option'
 
-                # Format the instrument type
-                if trade_metrics['type'] == 'option':
-                    instrument = f"{trade_metrics['ticker']} {trade_metrics['type']}"
+                # Determine the action based on quantity and type
+                entry_action = "Bought" if quantity > 0 else "Sold"
+
+                # Format the instrument description
+                if is_option:
+                    option_side = 'long' if quantity > 0 else 'short'
+                    option_kind = option_type.replace('_option', '') if option_type else 'unknown'
+                    instrument = f"{ticker} {option_side} {option_kind} option"
+                    dte = self._extract_dte(entry_time, option_ticker)
+                    instrument += f" (Strike: ${strike:.2f}, Expiry: {dte} days)"
                 else:
-                    instrument = f"shares of {trade_metrics['ticker']}"
+                    instrument = f"{abs(quantity)} shares of {ticker}"
 
-                # Date/Time
-                # Ensure timezone is US/Eastern
-                if trade_metrics['entry_time'].tzinfo is None:
-                    entry_time = pd.Timestamp(trade_metrics['entry_time']).tz_localize('UTC').tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
-                else:
-                    entry_time = pd.Timestamp(trade_metrics['entry_time']).tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
-
-                if trade_metrics['exit_time']:
-                    if trade_metrics['exit_time'].tzinfo is None:
-                        exit_time = pd.Timestamp(trade_metrics['exit_time']).tz_localize('UTC').tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
+                # Format the entry time
+                def format_time(timestamp):
+                    if not timestamp:
+                        return "N/A"
+                    ts = pd.Timestamp(timestamp)
+                    if ts.tzinfo is None:
+                        ts = ts.tz_localize('UTC').tz_convert('US/Eastern')
                     else:
-                        exit_time = pd.Timestamp(trade_metrics['exit_time']).tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
-                else:
-                    exit_time = None
+                        ts = ts.tz_convert('US/Eastern')
+                    return ts.strftime('%Y-%m-%d %H:%M')
 
-                # Format prices and P&L
-                entry_price = "${:,.2f}".format(trade_metrics['entry_price'])
-                exit_price = "${:,.2f}".format(trade_metrics['exit_price'])
-                pnl = trade_metrics['pnl']
-                pnl_str = "${:,.2f}".format(abs(pnl))
+                formatted_entry_time = format_time(entry_time)
+                formatted_exit_time = format_time(exit_time) if exit_time else "N/A"
 
-                # Create the trade description
-                trade_desc = f"{action} {abs_quantity} {instrument} at {entry_price} on {entry_time}, "
-                if trade_metrics['exit_time']:
-                    # Check if trade was closed due to assignment/expiration
-                    if trade_metrics.get('assignment', False):
-                        trade_desc += f"assigned/expired at {exit_price} on {exit_time} with a "
+                # Format prices
+                entry_price_str = f"${entry_price:,.2f}"
+                # For exit_price, use special handling based on flags
+                exit_price_str = f"at ${exit_price:,.2f}" if exit_price > 0 else "worthless"
+                if is_option:
+                    if exercised:
+                        exit_price_str = f"at strike price ${strike:,.2f}"
+                    elif assignment:
+                        exit_price_str = f"at strike price ${strike:,.2f}"
+
+                # Determine P&L status
+                pnl_status = "profit" if pnl > 0 else "loss"
+                pnl_str = f"${abs(pnl):,.2f}"
+
+                # Start building the trade description with entry action
+                trade_desc = f"{entry_action} {instrument} at {entry_price_str} on {formatted_entry_time},\n\t"
+
+                # Determine the exit action
+                if exit_time:
+                    if is_option:
+                        if exercised:
+                            # Since the option was exercised, it is in-the-money
+                            itm_status = "in-the-money"
+                            if option_type == 'call_option':
+                                exit_action = f"exercised {itm_status} call option {exit_price_str}"
+                            elif option_type == 'put_option':
+                                exit_action = f"exercised {itm_status} put option {exit_price_str}"
+                            else:
+                                exit_action = f"exercised option {exit_price_str}"
+
+                            # Optionally, mention resulting action if applicable
+                            if option_type == 'call_option' and quantity > 0:
+                                shares_bought = abs(quantity) * 100
+                                exit_action += f", resulting in purchasing {shares_bought} shares of {ticker}"
+                            elif option_type == 'put_option' and quantity < 0:
+                                shares_sold = abs(quantity) * 100
+                                exit_action += f", resulting in selling {shares_sold} shares of {ticker}"
+
+                            trade_desc += f"{exit_action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
+                        elif assignment:
+                            # Since the option was assigned, it is in-the-money
+                            itm_status = "in-the-money"
+                            if option_type == 'call_option':
+                                exit_action = f"assigned {itm_status} call option {exit_price_str}"
+                            elif option_type == 'put_option':
+                                exit_action = f"assigned {itm_status} put option {exit_price_str}"
+                            else:
+                                exit_action = f"assigned option {exit_price_str}"
+                            trade_desc += f"{exit_action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
+                        else:
+                            # Handle expiration
+                            action = f"expired at {exit_price_str}"
+                            trade_desc += f"{action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
                     else:
-                        trade_desc += f"closed at {exit_price} on {exit_time} with a "
-                    trade_desc += f"{'profit' if pnl > 0 else 'loss'} of {pnl_str}"
+                        # For shares
+                        exit_action = "called away" if assignment else "closed"
+                        trade_desc += f"{exit_action} at {exit_price_str} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
                 else:
                     trade_desc += "position still open"
 
-                # Add duration if closed
-                if trade_metrics['exit_time']:
-                    duration_days = trade_metrics['duration_hours'] / 24
+                # Add duration if the trade is closed
+                if exit_time:
+                    duration_days = duration_hours / 24
                     trade_desc += f" (held for {duration_days:.1f} days)"
 
+                # Append the trade description to the summary
                 trade_summary += trade_desc + "\n"
 
             summary.extend([trade_summary])

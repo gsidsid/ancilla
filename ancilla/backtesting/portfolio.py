@@ -70,7 +70,8 @@ class Portfolio:
         price: float,
         timestamp: datetime,
         transaction_costs: float = 0.0,
-        allow_naked_calls: bool = False
+        allow_naked_calls: bool = False,
+        is_assignment: bool = False
     ) -> bool:
         """Open a new position with accurate cash flow tracking."""
         if (instrument.is_option
@@ -132,7 +133,8 @@ class Portfolio:
         self.cash += cash_impact
 
         # Record the opening cash flow
-        self.opening_cash_flows.append(cash_impact)
+        if cash_impact > 0:
+            self.opening_cash_flows.append(cash_impact)
 
         # Create the position
         self.positions[ticker] = Position(
@@ -140,7 +142,8 @@ class Portfolio:
             quantity=quantity,
             entry_price=price,
             entry_date=timestamp,
-            entry_transaction_costs=transaction_costs
+            entry_transaction_costs=transaction_costs,
+            assignment=is_assignment
         )
 
         # Log the transaction
@@ -170,7 +173,10 @@ class Portfolio:
         timestamp: datetime,
         quantity: Optional[int] = None,
         transaction_costs: float = 0.0,
-        realized_pnl: Optional[float] = None
+        realized_pnl: Optional[float] = None,
+        is_assignment: bool = False,
+        is_exercise: bool = False,
+        skip_cash_impact: bool = False
     ) -> bool:
         """Close a specified quantity of a position with accurate PnL tracking."""
         ticker = instrument.ticker
@@ -196,6 +202,8 @@ class Portfolio:
             return False
 
         entry_price = position.entry_price
+        pnl = 0.0  # Initialize pnl here
+        cash_impact = 0.0  # Initialize cash_impact here
 
         # Calculate P&L for the specified quantity
         if instrument.is_option:
@@ -213,13 +221,14 @@ class Portfolio:
             pnl = (price - entry_price) * quantity
             cash_impact = (price * quantity) - transaction_costs
 
-        # Update cash
-        self.cash += cash_impact
+        # Update cash only if not skipping impact
+        if not skip_cash_impact:
+            self.cash += cash_impact
 
         # Calculate total transaction costs
         total_transaction_costs = position.entry_transaction_costs + transaction_costs
 
-        # Calculate realized PnL
+        # Always calculate realized PnL regardless of skip_cash_impact
         realized_pnl = pnl - total_transaction_costs
 
         print("Realized PnL: ", realized_pnl, "PnL: ", pnl, "Direction: ", position_quantity, "Quantity: ", quantity)
@@ -233,7 +242,9 @@ class Portfolio:
             exit_price=price,
             quantity=quantity,
             transaction_costs=transaction_costs,
-            realized_pnl=realized_pnl
+            realized_pnl=realized_pnl,
+            assignment=is_assignment or position.assignment,
+            exercised=is_exercise
         )
         self.trades.append(closing_trade)
 
@@ -319,14 +330,15 @@ class Portfolio:
         if is_call:
             # Short Call Assignment: Sell underlying stock at strike price
             self.logger.get_logger().info(f"Assigning short Call Option for {ticker}: Selling {share_quantity} shares at ${strike_price:.2f}")
-            instrument = Stock(underlying_ticker)
+
             # Close the corresponding covered position
             success = self.close_position(
-                instrument=instrument,
+                instrument=Stock(underlying_ticker),
                 price=strike_price,
                 timestamp=timestamp,
-                quantity=share_quantity,
-                transaction_costs=0.0  # Adjust as needed
+                quantity=-share_quantity,
+                transaction_costs=0.0, # Adjust as needed
+                is_assignment=True
             )
         else:
             # Short Put Assignment: Buy underlying stock at strike price
@@ -338,7 +350,8 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=0.0  # Adjust as needed
+                transaction_costs=0.0,  # Adjust as needed
+                is_assignment=True
             )
 
         # After assignment, close the option position
@@ -384,7 +397,8 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=0.0  # Adjust as needed
+                transaction_costs=0.0,  # Adjust as needed
+                is_assignment=True
             )
         else:
             # Long Put Exercise: Sell underlying stock at strike price
@@ -396,7 +410,7 @@ class Portfolio:
                 price=strike_price,
                 timestamp=timestamp,
                 quantity=share_quantity,
-                transaction_costs=0.0  # Adjust as needed
+                transaction_costs=0.0
             )
 
         # After exercise, close the option position
@@ -404,7 +418,8 @@ class Portfolio:
             instrument=option,
             price=0.0,  # Option is exercised; no residual value
             timestamp=timestamp,
-            transaction_costs=0.0
+            transaction_costs=0.0,
+            is_exercise=True
         ):
             self.logger.get_logger().info(f"Option {ticker} position closed due to exercise.")
             if ticker in self.positions:

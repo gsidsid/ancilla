@@ -15,6 +15,7 @@ class Trade:
     quantity: int
     transaction_costs: float = 0.0  # Combined commission and slippage
     assignment: bool = False
+    exercised: bool = False
     realized_pnl: Optional[float] = None
 
     @property
@@ -57,5 +58,10 @@ class Trade:
             'return_pct': self.return_pct,
             'duration_hours': self.duration_hours,
             'transaction_costs': self.transaction_costs,
-            'assignment': self.assignment
+            'option_type': self.instrument.instrument_type if self.instrument.is_option else None,
+            'option_ticker': self.instrument.format_option_ticker() if self.instrument.is_option else None,
+            'strike': self.instrument.strike if self.instrument.is_option else None,
+            'expiration': self.instrument.expiration if self.instrument.is_option else None,
+            'assignment': self.assignment,
+            'exercised': self.exercised
         }
