@@ -54,7 +54,7 @@ class CoveredCallStrategy(Strategy):
         for ticker in list(self.active_calls.keys()):
             if ticker in market_data_snapshot:
                 current_price = market_data_snapshot[ticker]['close']
-                self._manage_existing_call(ticker, current_price, timestamp, market_data)
+                self._manage_existing_call(ticker, current_price, timestamp)
 
         # Then handle potential new positions
         for ticker, data in market_data_snapshot.items():
@@ -66,12 +66,11 @@ class CoveredCallStrategy(Strategy):
 
             # Handle new stock positions and calls
             if ticker not in self.stock_positions:
-                self._enter_stock_position(ticker, current_price, timestamp, market_data)
+                self._enter_stock_position(ticker, current_price, timestamp)
             elif ticker not in self.active_calls:
-                self._write_new_call(ticker, current_price, timestamp, market_data)
+                self._write_new_call(ticker, current_price, timestamp)
 
-    def _enter_stock_position(self, ticker: str, price: float, timestamp: datetime,
-                            market_data: Dict[str, Any]) -> None:
+    def _enter_stock_position(self, ticker: str, price: float, timestamp: datetime) -> None:
         """Enter a new stock position."""
         portfolio_value = self.portfolio.get_total_value()
         position_value = portfolio_value * self.position_size
@@ -82,16 +81,13 @@ class CoveredCallStrategy(Strategy):
             stock = Stock(ticker)
             success = self.engine.buy_stock(
                 ticker=ticker,
-                quantity=shares,
-                timestamp=timestamp,
-                market_data=market_data
+                quantity=shares
             )
 
             if success:
                 self.stock_positions[ticker] = stock
 
-    def _write_new_call(self, ticker: str, current_price: float, timestamp: datetime,
-                       market_data: Dict[str, Any]) -> None:
+    def _write_new_call(self, ticker: str, current_price: float, timestamp: datetime) -> None:
         """Write a new covered call against an existing stock position."""
         stock_position = None
         for pos in self.portfolio.positions.values():
@@ -146,9 +142,7 @@ class CoveredCallStrategy(Strategy):
 
         success = self.engine.sell_option(
             option=selected_call,
-            quantity=contracts,
-            timestamp=timestamp,
-            market_data=market_data
+            quantity=contracts
         )
 
         if success:
@@ -156,7 +150,7 @@ class CoveredCallStrategy(Strategy):
             self.logger.info(f"Sold call for {ticker} @ strike {selected_call.strike} expiring {selected_call.expiration.date()}")
 
     def _manage_existing_call(self, ticker: str, current_price: float,
-                            timestamp: datetime, market_data: Dict[str, Any]) -> None:
+                            timestamp: datetime) -> None:
         """Manage existing call position, rolling if necessary."""
         call = self.active_calls[ticker]
 
@@ -167,7 +161,7 @@ class CoveredCallStrategy(Strategy):
             self.active_calls.pop(ticker)
 
             if any(isinstance(pos.instrument, Stock) for pos in self.portfolio.positions.values()):
-                self._write_new_call(ticker, current_price, timestamp, market_data)
+                self._write_new_call(ticker, current_price, timestamp)
             return
 
         dte = (call.expiration - timestamp).days
@@ -192,15 +186,13 @@ class CoveredCallStrategy(Strategy):
 
             success = self.engine.buy_option(
                 option=call,
-                quantity=contracts,
-                timestamp=timestamp,
-                market_data=market_data
+                quantity=contracts
             )
 
             if success:
                 self.logger.info(f"Bought back calls for {ticker}")
                 self.active_calls.pop(ticker)
-                self._write_new_call(ticker, current_price, timestamp, market_data)
+                self._write_new_call(ticker, current_price, timestamp)
             else:
                 self.logger.warning(f"Failed to buy back calls for {ticker}")
 

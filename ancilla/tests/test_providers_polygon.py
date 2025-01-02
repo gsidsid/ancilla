@@ -34,7 +34,9 @@ def provider(mock_client):
     """
     with patch("ancilla.providers.polygon_data_provider.RESTClient") as mock_rest:
         mock_rest.return_value = mock_client
-        return PolygonDataProvider(api_key="test-api-key")
+        pdp = PolygonDataProvider(api_key="test-api-key")
+        pdp.cache.clear()
+        yield pdp
 
 def create_mock_agg(timestamp: int, open_, high, low, close, volume, vwap=None) -> Mock:
     agg = Mock()
@@ -284,14 +286,15 @@ def live_provider():
         pytest.skip("POLYGON_API_KEY not set. Skipping live integration tests.")
     return PolygonDataProvider(api_key=api_key)
 
-@pytest.mark.integration
+
 def test_init(live_provider):
+    live_provider.cache.clear()
     assert live_provider.max_retries == 3
     assert live_provider.retry_delay == 1.0
     assert live_provider.eastern_tz == EST
     assert live_provider.utc_tz == UTC
 
-@pytest.mark.integration
+
 def test_get_current_price(live_provider):
     ticker = "AAPL"
     snapshot = live_provider.get_current_price(ticker)
@@ -300,7 +303,7 @@ def test_get_current_price(live_provider):
     assert snapshot.price is not None
     assert snapshot.timestamp.tzinfo == UTC
 
-@pytest.mark.integration
+
 def test_get_daily_bars(live_provider):
     ticker = "AAPL"
     df = live_provider.get_daily_bars(ticker, "2024-01-01", "2024-02-01")
@@ -309,7 +312,7 @@ def test_get_daily_bars(live_provider):
     for col in ["open", "high", "low", "close", "volume"]:
         assert col in df.columns, f"Missing column {col} in daily bars"
 
-@pytest.mark.integration
+
 def test_get_options_expiration(live_provider):
     ticker = "AAPL"
     expirations = live_provider.get_options_expiration(ticker)
@@ -317,7 +320,7 @@ def test_get_options_expiration(live_provider):
     assert len(expirations) > 0, "No expirations returned"
     assert all(exp.tzinfo == UTC for exp in expirations)
 
-@pytest.mark.integration
+
 def test_get_options_chain(live_provider):
     ticker = "AAPL"
     options = live_provider.get_options_chain(ticker)
@@ -327,7 +330,7 @@ def test_get_options_chain(live_provider):
             assert opt.contract_type in ["call", "put"]
             assert opt.implied_volatility > 0, "Implied volatility must be positive"
 
-@pytest.mark.integration
+
 def test_get_intraday_bars(live_provider):
     ticker = "AAPL"
     df = live_provider.get_intraday_bars(ticker, "2024-01-03", "2024-01-03", interval="5min")
@@ -336,7 +339,7 @@ def test_get_intraday_bars(live_provider):
         assert "close" in df.columns
         assert "regular_session" in df.columns
 
-@pytest.mark.integration
+
 def test_market_hours(live_provider):
     result = live_provider.get_market_hours("2024-01-02")
     assert result is not None, "Should be a normal trading day"

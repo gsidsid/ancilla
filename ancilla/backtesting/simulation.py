@@ -109,6 +109,7 @@ class MarketSimulator:
         price: float,
         quantity: int,
         market_data: Dict[str, Any],
+        volume: int,
         asset_type: str = 'stock'
     ) -> float:
         """Estimate probability of fill during market hours."""
@@ -123,12 +124,15 @@ class MarketSimulator:
             normalized_price = (price - low) / (high - low)
             normalized_price = max(0.0, min(1.0, normalized_price))  # Clamp between 0 and 1
 
+            # Calculate volume impact on probability
+            volume_factor = min(1.0, volume / abs(quantity) if quantity != 0 and volume != 0 else 1.0)
+
             if quantity > 0:  # Buy order
-                # Higher probability for lower prices
-                prob = 0.5 + 0.5 * (1 - normalized_price)
+                # Higher probability for lower prices and higher volume
+                prob = (0.5 + 0.5 * (1 - normalized_price)) * volume_factor
             else:  # Sell order
-                # Higher probability for higher prices
-                prob = 0.5 + 0.5 * normalized_price
+                # Higher probability for higher prices and higher volume
+                prob = (0.5 + 0.5 * normalized_price) * volume_factor
 
             return prob
         else:

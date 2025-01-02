@@ -25,8 +25,15 @@ class Trade:
     @property
     def pnl(self) -> float:
         """Calculate net P&L including transaction costs."""
+        if self.realized_pnl is not None:
+            return self.realized_pnl
         multiplier = 100 if self.instrument.is_option else 1
-        gross_pnl = (self.exit_price - self.entry_price) * self.quantity * multiplier
+        if self.instrument.is_option and self.quantity < 0:
+            # Short option
+            gross_pnl = (self.entry_price - self.exit_price) * abs(self.quantity) * multiplier
+        else:
+            # Long option or stock
+            gross_pnl = (self.exit_price - self.entry_price) * self.quantity * multiplier
         return gross_pnl - self.transaction_costs
 
     @property

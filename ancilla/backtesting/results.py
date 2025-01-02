@@ -8,6 +8,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from ancilla.backtesting.instruments import InstrumentType
+from ancilla.formulae.metrics import (
+    calculate_return_metrics, calculate_drawdown_metrics, calculate_risk_metrics,
+    calculate_trade_metrics
+)
 
 @dataclass
 class BacktestResults:
@@ -605,7 +609,8 @@ class BacktestResults:
             option_pnls = [t.pnl for t in options_trades]
 
         summary = [
-            "Backtest Performance Summary",
+            "",
+            self.strategy_name + " – performance",
             "=" * 50,
             f"Initial Capital: ${self.initial_capital:,.2f}",
             f"Final Capital: ${self.final_capital:,.2f}",
@@ -637,24 +642,12 @@ class BacktestResults:
                 f"  - Puts: {len(puts)}",
                 f"  - Long: {len(long_options)}",
                 f"  - Short: {len(short_options)}",
+                "",
                 f"Average Option P&L: ${np.mean(option_pnls):.2f}",
                 f"Total Option P&L: ${sum(option_pnls):.2f}",
                 f"Option Win Rate: {len([p for p in option_pnls if p > 0])/len(option_pnls):.2%}",
                 f"Assignment Rate: {len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.2%}"
             ])
-
-        # Calculate total transaction costs
-        total_commission = sum(t.transaction_costs for t in self.trades)
-        total_slippage = sum(t.transaction_costs for t in self.trades)  # Assuming slippage is stored similarly
-        # Note: If slippage is stored differently, adjust accordingly
-
-        summary.extend([
-            "",
-            "Transaction Costs:",
-            f"Total Costs: ${total_commission + total_slippage:,.2f}",
-            f"Cost % of AUM: {(total_commission + total_slippage)/self.initial_capital:.2%}"
-        ])
-
         return "\n".join(summary)
 
     def _prepare_summary_data(self) -> List[List[str]]:
@@ -704,3 +697,122 @@ class BacktestResults:
             metrics.extend([[k, v] for k, v in options_metrics.items()])
 
         return metrics
+
+    @staticmethod
+    def calculate(engine) -> "BacktestResults":
+        """Calculate comprehensive backtest results."""
+        # Convert equity curve to dataframe
+        equity_curve_dict = {'timestamp': [], 'equity': []}
+        for timestamp, equity in engine.portfolio.equity_curve:
+            equity_curve_dict['timestamp'].append(timestamp)
+            equity_curve_dict['equity'].append(equity)
+
+        equity_df = pd.DataFrame.from_dict(equity_curve_dict).set_index('timestamp')
+        equity_df['returns'] = equity_df['equity'].pct_change()
+        daily_returns = equity_df['returns'].dropna()
+
+        # Calculate metrics using the new formulae module
+        return_metrics = calculate_return_metrics(pd.Series(equity_df['equity']))
+        drawdown_metrics = calculate_drawdown_metrics(pd.Series(equity_df['equity']))
+        risk_metrics = calculate_risk_metrics(pd.Series(daily_returns))
+
+        # Separate trades by type
+        options_trades = [t for t in engine.portfolio.trades if t.instrument.is_option]
+        stock_trades = [t for t in engine.portfolio.trades if not t.instrument.is_option]
+
+        # Calculate trade metrics
+        options_metrics = calculate_trade_metrics(options_trades)
+        stock_metrics = calculate_trade_metrics(stock_trades)
+
+        # Calculate total transaction costs
+        # Since transaction costs are already subtracted in trade.pnl, avoid double-counting
+        total_commission = sum(engine.commission_costs)
+        total_slippage = sum(engine.slippage_costs)
+        total_transaction_costs = sum(engine.total_transaction_costs)
+
+        # Calculate net opening cash flows
+        net_opening_cash_flows = sum(engine.portfolio.opening_cash_flows)
+
+        # Calculate realized P&L
+        realized_pnl = sum(t.pnl for t in engine.portfolio.trades)  # Already includes commissions
+
+        # Realized P&L already includes transaction costs
+        expected_final_capital = engine.initial_capital + realized_pnl
+        actual_final_capital = engine.portfolio.cash + engine.portfolio.get_position_value()
+
+        # Compare with actual final capital
+        if not np.isclose(expected_final_capital, actual_final_capital, atol=1e-2):
+            engine.logger.warning(
+                f"Discrepancy detected:\n"
+                f"Expected Final Capital: {expected_final_capital}\n"
+                f"Actual Final Capital: {actual_final_capital}\n"
+                f"Debug Info:\n "
+                f"Realized PnL: {realized_pnl}\n"
+                f"Initial Capital: {engine.initial_capital}\n"
+                f"Total Transaction Costs: {total_transaction_costs}"
+                f"Net Opening Cash Flows: {net_opening_cash_flows}"
+                f"Total Commission: {total_commission}\n"
+                f"Total Slippage: {total_slippage}"
+            )
+
+        # Compile results
+        results = {
+            'initial_capital': engine.initial_capital,
+            'final_capital': actual_final_capital,
+            'net_pnl': actual_final_capital - engine.initial_capital,
+            **return_metrics,
+            **drawdown_metrics,
+            'options_metrics': options_metrics,
+            'stock_metrics': stock_metrics,
+            'transaction_costs': {
+                'total_commission': total_commission,
+                'total_slippage': total_slippage,
+                'avg_commission_per_trade': (
+                    total_commission / len(engine.portfolio.trades)
+                    if engine.portfolio.trades else 0
+                ),
+                'avg_slippage_per_trade': (
+                    total_slippage / len(engine.portfolio.trades)
+                    if engine.portfolio.trades else 0
+                ),
+                'cost_as_pct_aum': (
+                    (total_commission + total_slippage) / engine.initial_capital
+                    if engine.initial_capital > 0 else 0
+                )
+            },
+            'execution_metrics': {
+                'fill_ratio': np.mean(engine.fill_ratios) if engine.fill_ratios else 0,
+                'daily_metrics': {
+                    'avg_slippage': np.mean(engine.daily_metrics['slippage']),
+                    'avg_commission': np.mean(engine.daily_metrics['commissions']),
+                    'avg_fill_ratio': np.mean(engine.daily_metrics['fills']),
+                    'avg_volume_participation': np.mean(engine.daily_metrics['volume_participation'])
+                }
+            },
+            'equity_curve': equity_df,
+            'daily_returns': daily_returns,
+            'trade_count': len(engine.portfolio.trades)
+        }
+
+        results.update(risk_metrics)
+
+        return BacktestResults(
+            strategy_name=engine.strategy.name,
+            initial_capital=engine.initial_capital,
+            final_capital=results['final_capital'],
+            total_return=results['total_return'],
+            annualized_return=results['annualized_return'],
+            annualized_volatility=results['annualized_volatility'],
+            sharpe_ratio=results['sharpe_ratio'],
+            sortino_ratio=results['sortino_ratio'],
+            max_drawdown=results['max_drawdown'],
+            options_metrics=results['options_metrics'],
+            stock_metrics=results['stock_metrics'],
+            transaction_costs=results['transaction_costs'],
+            execution_metrics=results['execution_metrics'],
+            equity_curve=results['equity_curve'],
+            drawdown_series=results['drawdown_series'],
+            daily_returns=results['daily_returns'],
+            net_pnl=results['net_pnl'],
+            trades=engine.portfolio.trades
+        )

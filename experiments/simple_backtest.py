@@ -45,18 +45,13 @@ class SimpleTestStrategy(Strategy):
                 success = self.engine.buy_stock(
                     ticker=ticker,
                     quantity=shares,
-                    timestamp=timestamp,
-                    market_data=market_data
+                    timestamp=timestamp
                 )
                 if success:
                     self.entry_prices[ticker] = data['close']
                     self.logger.info(f"Successfully opened position in {ticker}")
                 else:
                     self.logger.warning(f"Failed to open position in {ticker}")
-
-    def on_option_data(self, timestamp: datetime, options_data: List[OptionData]) -> None:
-        """Not using options in this test."""
-        pass
 
 def test_backtest():
     """Run a simple backtest to verify the engine works."""
