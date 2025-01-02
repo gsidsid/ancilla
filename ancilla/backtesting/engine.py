@@ -1,4 +1,3 @@
-from audioop import add
 # ancilla/backtesting/engine.py
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -15,11 +14,11 @@ from ancilla.backtesting.results import BacktestResults
 from ancilla.backtesting.strategy import Strategy
 from ancilla.backtesting.portfolio import Portfolio
 from ancilla.backtesting.simulation import (
-    MarketSimulator, CommissionConfig, SlippageConfig
+    Broker, CommissionConfig, SlippageConfig
 )
 
 class BacktestEngine:
-    """Main backtesting engine with realistic market simulation."""
+    """Main backtesting engine with realistic broker simulation."""
 
     def __init__(
         self,
@@ -40,6 +39,13 @@ class BacktestEngine:
         # Generate portfolio name from strategy name and timestamp
         name = f"{strategy.name}_orders"
         self.portfolio = Portfolio(name, initial_capital)
+
+        # Set timezone to Eastern Time
+        start_date = start_date.astimezone(pytz.timezone("US/Eastern"))
+        end_date = end_date.astimezone(pytz.timezone("US/Eastern"))
+        start_date = start_date.replace(hour=9, minute=30, second=0, microsecond=0)
+        end_date = end_date.replace(hour=16, minute=0, second=0, microsecond=0)
+
         self.start_date = start_date
         self.end_date = end_date
         self.tickers = tickers
@@ -49,7 +55,7 @@ class BacktestEngine:
         self.last_timestamp = start_date
 
         # Initialize market simulator
-        self.market_simulator = MarketSimulator(commission_config, slippage_config)
+        self.broker = Broker(commission_config, slippage_config)
 
         # Cache for market data and analytics
         self._market_data_cache = {}
@@ -143,6 +149,9 @@ class BacktestEngine:
             return 0.0
         return min(1.0, np.log10(dollar_volume) / 7.0)  # 7.0 ~ $10M daily volume
 
+    # First, ensure we have the ExecutionDetails dataclass and improved MarketSimulator from earlier
+    # Then use this execution method:
+
     def _execute_instrument_order(
         self,
         instrument: Instrument,
@@ -151,143 +160,85 @@ class BacktestEngine:
         is_assignment: bool = False
     ) -> bool:
         """
-        Internal method to execute orders for any instrument type.
-
-        Args:
-            instrument: Instrument to trade
-            quantity: Order quantity (positive for buy, negative for sell)
-            timestamp: Current timestamp
-            market_data: Market data dictionary
+        Internal method to execute orders with broker simulation.
         """
         market_data = self.market_data
 
-        market_data_ticker = market_data[instrument.underlying_ticker]
+        # Get market data for either option or stock ticker
+        ticker = instrument.format_option_ticker() if instrument.is_option else instrument.underlying_ticker
 
-        if instrument.is_option:
-            # Get market data for the option ticker
-            option_ticker = instrument.format_option_ticker()
-            bars = self.data_provider.get_intraday_bars(
-                ticker=option_ticker,
-                start_date=timestamp - timedelta(hours=1),
-                end_date=timestamp,
-                interval='1hour'
-            )
-            data = bars.iloc[-1].to_dict() if bars is not None and not bars.empty else {}
-            market_data[option_ticker] = data
-            market_data_ticker = data
-        else:
-            # Get market data for the stock ticker
-            bars = self.data_provider.get_intraday_bars(
-                ticker=instrument.underlying_ticker,
-                start_date=timestamp - timedelta(hours=1),
-                end_date=timestamp,
-                interval='1hour'
-            )
-            data = bars.iloc[-1].to_dict() if bars is not None and not bars.empty else {}
-            market_data[instrument.underlying_ticker] = data
-            market_data_ticker = data
+        bars = self.data_provider.get_intraday_bars(
+            ticker=ticker,
+            start_date=timestamp - timedelta(hours=1),
+            end_date=timestamp,
+            interval='1hour'
+        )
 
-        # Get current price/target price to execute with
+        data = bars.iloc[-1].to_dict() if bars is not None and not bars.empty else {}
+        market_data[ticker] = data
+        market_data_ticker = data
+
+        # Get target price
         price = market_data_ticker.get('close', 0)
         if price is None:
             self.logger.warning(f"No price data for {instrument.ticker}")
             return False
 
-        # Calculate liquidity score
-        liquidity_score = self._calculate_liquidity_score(market_data_ticker)
-        if liquidity_score < 0.1:
-            self.logger.warning(f"Insufficient liquidity for {instrument.ticker}")
+        # Calculate execution details using broker simulation
+        execution_details = self.broker.calculate_execution_details(
+            ticker=instrument.ticker if not instrument.is_option else instrument.format_option_ticker(),
+            base_price=price,
+            quantity=quantity,
+            market_data=market_data_ticker,
+            asset_type='option' if instrument.is_option else 'stock'
+        )
+        if not execution_details or execution_details.adjusted_quantity == 0:
             return False
 
-        # Adjust quantity for volume
-        volume = market_data_ticker.get('volume', 0)
-        participation_rate = abs(quantity) / volume if volume > 0 else 1
-        if participation_rate > 0.1:  # Limit to 10% of daily volume
-            adjusted_quantity = int(0.1 * volume) * (1 if quantity > 0 else -1)
+        # Use fill probability from execution details
+        fill_probability = 1.0 if is_assignment else execution_details.fill_probability
+        if not is_assignment and np.random.random() > fill_probability:
             self.logger.warning(
-                f"Order size adjusted for liquidity: {quantity} -> {adjusted_quantity}"
-            )
-            quantity = adjusted_quantity
-
-        if quantity == 0:
-            return False
-
-        # Calculate execution details
-        price_impact = self.market_simulator.calculate_price_impact(
-            price,
-            quantity,
-            volume,
-            liquidity_score
-        )
-
-        execution_price = round(price * (1 + price_impact), 2)
-        commission = self.market_simulator.calculate_commission(
-            execution_price,
-            quantity,
-            'option' if instrument.is_option else 'stock'
-        )
-
-        fill_probability = self.market_simulator.estimate_market_hours_fill_probability(
-            execution_price,
-            quantity,
-            market_data_ticker,
-            int(volume),
-            'option' if instrument.is_option else 'stock'
-        )
-        if is_assignment:
-            fill_probability = 1.0 # Assume assignment always fills
-
-        # Check if order fills
-        if np.random.random() > fill_probability:
-            self.logger.warning(
-                f"Order failed to fill: {instrument.ticker} {quantity} @ {execution_price:.2f} "
+                f"Order failed to fill: {instrument.ticker} {execution_details.adjusted_quantity} @ {execution_details.execution_price:.2f} "
                 f"(fill probability: {fill_probability:.2%})"
             )
             return False
 
-        # Calculate total transaction costs
-
-        slippage = abs(price * price_impact) * abs(quantity)  # Calculate slippage based on percentage impact
-        if instrument.is_option:
-            slippage *= instrument.get_multiplier()
-        total_transaction_costs = commission + slippage
-
-        print()
-
         # Execute the order based on whether it's opening or closing a position
         success = False
+        quantity = execution_details.adjusted_quantity  # Use adjusted quantity for execution
         if quantity > 0:  # Buying
             if instrument.is_option:
                 option_ticker = instrument.format_option_ticker()
                 if option_ticker in self.portfolio.positions:
                     # Buying to close a short option position
                     position = self.portfolio.positions[option_ticker]
-                    initial_premium = abs(position.quantity) * position.entry_price * instrument.get_multiplier()
-                    buyback_cost = abs(quantity) * execution_price * instrument.get_multiplier()
+                    # initial_premium = abs(position.quantity) * position.entry_price * instrument.get_multiplier()
+                    # buyback_cost = abs(quantity) * execution_details.execution_price * instrument.get_multiplier()
 
                     success = self.portfolio.close_position(
                         instrument=position.instrument,
-                        price=execution_price,
+                        price=execution_details.execution_price,
                         timestamp=timestamp,
-                        transaction_costs=total_transaction_costs,
+                        transaction_costs=execution_details.total_transaction_costs,
                     )
                 else:
                     # Opening a new long option position
                     success = self.portfolio.open_position(
                         instrument=instrument,
                         quantity=quantity,
-                        price=execution_price,
+                        price=execution_details.execution_price,
                         timestamp=timestamp,
-                        transaction_costs=total_transaction_costs
+                        transaction_costs=execution_details.total_transaction_costs
                     )
             else:
                 # Opening a new stock position
                 success = self.portfolio.open_position(
                     instrument=instrument,
                     quantity=quantity,
-                    price=execution_price,
+                    price=execution_details.execution_price,
                     timestamp=timestamp,
-                    transaction_costs=total_transaction_costs
+                    transaction_costs=execution_details.total_transaction_costs
                 )
         else:  # Selling
             if instrument.is_option:
@@ -298,48 +249,58 @@ class BacktestEngine:
 
                     success = self.portfolio.close_position(
                         instrument=position.instrument,
-                        price=execution_price,
+                        price=execution_details.execution_price,
                         timestamp=timestamp,
-                        transaction_costs=total_transaction_costs,
+                        transaction_costs=execution_details.total_transaction_costs,
                     )
                 else:
                     # Opening a new short option position
                     success = self.portfolio.open_position(
                         instrument=instrument,
                         quantity=quantity,
-                        price=execution_price,
+                        price=execution_details.execution_price,
                         timestamp=timestamp,
-                        transaction_costs=total_transaction_costs
+                        transaction_costs=execution_details.total_transaction_costs
                     )
             else:
-                # Closing a stock position
+                # Closing a long stock position
                 if instrument.ticker in self.portfolio.positions:
                     success = self.portfolio.close_position(
                         instrument=self.portfolio.positions[instrument.ticker].instrument,
-                        price=execution_price,
+                        price=execution_details.execution_price,
                         timestamp=timestamp,
-                        transaction_costs=total_transaction_costs
+                        transaction_costs=execution_details.total_transaction_costs
+                    )
+                # Going short on a stock
+                else:
+                    success = self.portfolio.open_position(
+                        instrument=instrument,
+                        quantity=quantity,
+                        price=execution_details.execution_price,
+                        timestamp=timestamp,
+                        transaction_costs=execution_details.total_transaction_costs
                     )
 
+
         if success:
-            # Track metrics
-            self.daily_metrics['volume_participation'].append(participation_rate)
+            # Track metrics using consolidated execution details
+            self.daily_metrics['volume_participation'].append(execution_details.participation_rate)
             self.daily_metrics['fills'].append(1.0)
-            self.daily_metrics['slippage'].append(price_impact)
-            self.daily_metrics['commissions'].append(commission)
+            self.daily_metrics['slippage'].append(execution_details.price_impact)
+            self.daily_metrics['commissions'].append(execution_details.commission)
 
             self.fill_ratios.append(fill_probability)
-            self.slippage_costs.append(slippage)
-            self.commission_costs.append(commission)
-            self.total_transaction_costs.append(total_transaction_costs)
+            self.slippage_costs.append(execution_details.slippage)
+            self.commission_costs.append(execution_details.commission)
+            self.total_transaction_costs.append(execution_details.total_transaction_costs)
 
             # Log execution
             self.logger.info(
-                f"Order executed: {instrument.ticker} {quantity} @ {execution_price:.2f}\n"
+                f"Order executed: {instrument.ticker} {quantity} @ {execution_details.execution_price:.2f}\n"
                 f"  Base price: ${price:.2f}\n"
-                f"  Impact: {price_impact:.2%}\n"
-                f"  Commission: ${commission:.2f}\n"
-                f"  Volume participation: {participation_rate:.2%}"
+                f"  Impact: {execution_details.price_impact:.2%}\n"
+                f"  Commission: ${execution_details.commission:.2f}\n"
+                f"  Volume participation: {execution_details.participation_rate:.2%}"
             )
 
         return success
@@ -528,15 +489,15 @@ class BacktestEngine:
                     consecutive_no_data = 0
 
                     # Process market data in strategy
+                    # Log with eastern time
+                    eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
                     strategyCurrentTimeFormatter = logging.Formatter(
-                        fmt=f"ancilla.{self.strategy.name} - [{
-                            current_time.strftime('%Y-%m-%d %H:%M:%S')
-                        }] - %(levelname)s - %(message)s"
+                        fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
                     )
                     self.strategy.logger.handlers[0].setFormatter(strategyCurrentTimeFormatter)
                     self.strategy.logger.handlers[1].setFormatter(strategyCurrentTimeFormatter)
 
-                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + current_time.strftime('%Y-%m-%d %H:%M:%S') + "]" + "\033[K"
+                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
                     print(current_line, end='\r')
                     self.market_data = market_data
                     self.last_timestamp = current_time
@@ -555,84 +516,41 @@ class BacktestEngine:
             current_date += timedelta(days=1)
 
         # Close remaining positions
-        self._close_all_positions(current_date)
+        self._close_all_positions(current_date - timedelta(days=1))
 
         # Interpret engine data
         results = BacktestResults.calculate(self)
 
         # Log summary
-        self.logger.info("\n" + results.summarize() + "\n")
-        self.logger.info("\n=====================TRADES========================\n")
-        trade_summary = ""
-        # sort trades by entry time
-        self.portfolio.trades.sort(key=lambda x: x.entry_time)
-        for trade in self.portfolio.trades:
-            # Create a human-readable summary of all trades
-            trade_metrics = trade.get_metrics()
-
-            # Determine if it was a buy or sell
-            action = "Bought" if trade_metrics['quantity'] > 0 else "Sold"
-            abs_quantity = abs(trade_metrics['quantity'])
-
-            # Format the instrument type
-            if trade_metrics['type'] == 'option':
-                instrument = f"{trade_metrics['ticker']} {trade_metrics['type']}"
-            else:
-                instrument = f"shares of {trade_metrics['ticker']}"
-
-            # Format prices and P&L
-            entry_price = "${:,.2f}".format(trade_metrics['entry_price'])
-            exit_price = "${:,.2f}".format(trade_metrics['exit_price'])
-            pnl = trade_metrics['pnl']
-            pnl_str = "${:,.2f}".format(abs(pnl))
-
-            # Create the trade description
-            trade_desc = f"{action} {abs_quantity} {instrument} at {entry_price}, "
-            if trade_metrics['exit_time']:
-                trade_desc += f"closed at {exit_price} for a "
-                trade_desc += f"{'profit' if pnl > 0 else 'loss'} of {pnl_str}"
-            else:
-                trade_desc += "position still open"
-
-            # Add duration if closed
-            if trade_metrics['exit_time']:
-                duration_days = trade_metrics['duration_hours'] / 24
-                trade_desc += f" (held for {duration_days:.1f} days)"
-
-            trade_summary += trade_desc + "\n"
-
-        self.logger.info("\n" + trade_summary)
+        self.logger.info(results.summarize())
 
         return results
 
     def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
-        """Handle option expiration and assignments."""
-        # Check if we're at market close (after 4 PM ET)
-        is_market_close = (expiration_time.hour >= 16)
-        if not is_market_close:
+        """
+        Handle option expiration and assignments with careful cash flow tracking.
+        Process:
+        1. Identify expiring positions
+        2. Calculate all values first
+        3. Process assignments and handle position changes
+        4. Record trades by directly interacting with the portfolio's handle_assignment and handle_exercise methods
+        """
+        if expiration_time.hour < 16:  # Only process at market close
             return
 
-        # Get expiring positions
+        # Get expiring options
         option_positions = [
             pos for pos in self.portfolio.positions.values()
-            if pos.instrument.is_option and pos.instrument.expiration.date() == current_date.date()
+            if (pos.instrument.is_option and
+                pos.instrument.expiration.date() == current_date.date())
         ]
 
         for position in option_positions:
             option = position.instrument
             ticker = option.format_option_ticker()
-
-            self.logger.info(
-                f"Processing expiration for {ticker}:\n"
-                f"  Position direction: {'Long' if position.quantity > 0 else 'Short'}\n"
-                f"  Option type: {option.instrument_type}\n"
-                f"  Strike: ${option.strike:.2f}\n"
-                f"  Underlying price: ${underlying_close:.2f}\n"
-                f"  Intrinsic value: ${intrinsic_value:.2f}"
-            )
-
-            # Get underlying price
             underlying_ticker = option.underlying_ticker
+
+            # Get final underlying price
             underlying_data = self.data_provider.get_intraday_bars(
                 ticker=underlying_ticker,
                 start_date=expiration_time - timedelta(hours=1),
@@ -645,124 +563,131 @@ class BacktestEngine:
                 continue
 
             underlying_close = underlying_data.iloc[-1]['close']
+            self.logger.info(f"Processing expiration for {ticker} with underlying at ${underlying_close:.2f}")
 
             # Calculate intrinsic value
             if option.instrument_type == InstrumentType.CALL_OPTION:
                 intrinsic_value = max(underlying_close - option.strike, 0)
-            else:  # PUT_OPTION
+            else:
                 intrinsic_value = max(option.strike - underlying_close, 0)
 
-            # Log expiration status
-            if intrinsic_value > 0:
-                self.logger.info(
-                    f"Option {ticker} is in-the-money at expiration with intrinsic value ${intrinsic_value:.2f}."
-                )
+            # Determine if option is in-the-money (ITM)
+            MIN_ITM_THRESHOLD = 0.01
+            is_itm = intrinsic_value > MIN_ITM_THRESHOLD
+
+            # Determine the action based on position type and option type
+            if is_itm:
+                if position.quantity < 0:
+                    # Short Option Assignment
+                    if option.instrument_type == InstrumentType.CALL_OPTION:
+                        # Short Call Assignment: Sell underlying stock at strike price
+                        self.portfolio.handle_assignment(
+                            option=option,
+                            strike_price=option.strike,
+                            timestamp=expiration_time,
+                            is_call=True
+                        )
+                    elif option.instrument_type == InstrumentType.PUT_OPTION:
+                        # Short Put Assignment: Buy underlying stock at strike price
+                        self.portfolio.handle_assignment(
+                            option=option,
+                            strike_price=option.strike,
+                            timestamp=expiration_time,
+                            is_call=False
+                        )
+                else:
+                    # Long Option Exercise
+                    if option.instrument_type == InstrumentType.CALL_OPTION:
+                        # Long Call Exercise: Buy underlying stock at strike price
+                        self.portfolio.handle_exercise(
+                            option=option,
+                            strike_price=option.strike,
+                            timestamp=expiration_time,
+                            is_call=True
+                        )
+                    elif option.instrument_type == InstrumentType.PUT_OPTION:
+                        # Long Put Exercise: Sell underlying stock at strike price
+                        self.portfolio.handle_exercise(
+                            option=option,
+                            strike_price=option.strike,
+                            timestamp=expiration_time,
+                            is_call=False
+                        )
             else:
-                self.logger.info(f"Option {ticker} expires worthless (out-of-the-money).")
-
-            # Calculate transaction costs for potential assignment
-            transaction_costs = 0
-
-            # Handle assignment
-            self.logger.info(
-                f"Attempting assignment for {ticker}:\n"
-                f"  Assignment quantity: {assignment_quantity}\n"
-                f"  Direction: {'Buy' if is_buying else 'Sell'} stock\n"
-                f"  Strike price: ${option.strike:.2f}"
-            )
-            if intrinsic_value > 0:
-                assignment_quantity = abs(position.quantity) * 100
-
-                # For calls: the holder buys stock at strike, writer sells stock at strike
-                if option.instrument_type == InstrumentType.CALL_OPTION:
-                    self.sell_stock(
-                        ticker=underlying_ticker,
-                        quantity=assignment_quantity,
-                        _is_assignment=True
+                # Option expires worthless
+                if position.quantity < 0:
+                    # Short option: Keep premium
+                    self.logger.info(f"Option {ticker} expired worthless. Premium kept.")
+                    # Close the option position without any cash impact
+                    self.portfolio.close_position(
+                        instrument=option,
+                        price=0.0,  # Option expired worthless
+                        timestamp=expiration_time,
+                        quantity=abs(position.quantity),
+                        transaction_costs=0.0  # Adjust as needed
+                    )
+                else:
+                    # Long option: Lose premium
+                    self.logger.info(f"Option {ticker} expired worthless. Premium lost.")
+                    # Close the option position without any additional action
+                    self.portfolio.close_position(
+                        instrument=option,
+                        price=0.0,  # Option expired worthless
+                        timestamp=expiration_time,
+                        quantity=position.quantity,
+                        transaction_costs=0.0  # Adjust as needed
                     )
 
-                # For puts: the holder sells stock at strike, writer buys stock at strike
-                else:  # PUT_OPTION
-                    self.buy_stock(
-                        ticker=underlying_ticker,
-                        quantity=assignment_quantity,
-                        _is_assignment=True
-                    )
+            # Remove the option ticker from the list of tickers if fully closed
+            if ticker not in self.portfolio.positions:
+                if ticker in self.tickers:
+                    self.tickers.remove(ticker)
 
-            # Calculate P&L
-            multiplier = option.get_multiplier()
-            initial_premium = abs(position.quantity) * position.entry_price * multiplier
-            assignment_cost = intrinsic_value * abs(position.quantity) * multiplier
-            realized_pnl = initial_premium - assignment_cost - transaction_costs
-
-            # Log P&L breakdown
+            # Log final state
             self.logger.info(
-                f"Option {ticker} expiration P&L breakdown:"
-                f"\n  Initial premium received: ${initial_premium:.2f}"
-                f"\n  Assignment cost: ${assignment_cost:.2f}"
-                f"\n  Transaction costs: ${transaction_costs:.2f}"
-                f"\n  Total P&L: ${realized_pnl:.2f}"
+                f"Option Expiration Summary for {ticker}:\n"
+                f"  ITM: {is_itm}\n"
+                f"  Intrinsic Value: ${intrinsic_value:.2f}"
             )
-
-            # Close the position (this will handle cash updates)
-            trade = Trade(
-                instrument=option,
-                entry_time=position.entry_date,
-                exit_time=expiration_time,
-                entry_price=position.entry_price,
-                exit_price=intrinsic_value,
-                quantity=position.quantity,
-                transaction_costs=transaction_costs,
-                assignment=(intrinsic_value > 0),
-                realized_pnl=realized_pnl
-            )
-
-            # Add trade to portfolio and remove position
-            self.portfolio.trades.append(trade)
-            del self.portfolio.positions[ticker]
-
 
     def _close_all_positions(self, current_date: datetime):
-        self.logger.info(f"Starting to close all positions at {current_date}")
+        self.logger.info("End of test– automatically closing all positions")
         positions_to_close = list(self.portfolio.positions.items())
-        self.logger.info(f"Found {len(positions_to_close)} positions to close:")
+        self.logger.info(f"Found {len(positions_to_close)} open positions")
         for t, p in positions_to_close:
             self.logger.info(f"  {t}: {p.quantity} units @ {p.entry_price}")
 
         for ticker, position in positions_to_close:
             # Use the actual position ticker for lookup, not the underlying
             lookup_ticker = ticker  # This is the key change
-
-            self.logger.info(f"Attempting to close {ticker} using lookup ticker {lookup_ticker}")
-            self.logger.info(f"Fetching market data from {current_date - timedelta(hours=1)} to {current_date}")
+            closing_time = current_date.replace(hour=16, minute=0, second=0)
 
             bars = self.data_provider.get_intraday_bars(
                 ticker=lookup_ticker,
-                start_date=current_date - timedelta(days=1),
+                start_date=current_date,
                 end_date=current_date,
                 interval='1hour'
             )
 
             if bars is None or bars.empty:
-                self.logger.warning(f"No market data found for {lookup_ticker} - searching for recent data")
                 # Try to get data from the last week
                 historical_bars = self.data_provider.get_intraday_bars(
                     ticker=lookup_ticker,
-                    start_date=current_date - timedelta(days=7),
+                    start_date=current_date,
                     end_date=current_date,
                     interval='1hour'
                 )
 
                 if historical_bars is not None and not historical_bars.empty:
-                    closing_price = historical_bars.iloc[-1]['close']
-                    self.logger.info(f"Found recent price for {lookup_ticker}: {closing_price}")
+                    closing_price = historical_bars.iloc[0]['close']
+                    closing_time = historical_bars.index[0]
                 else:
-                    self.logger.warning(f"No recent data found - falling back to entry price")
+                    self.logger.warning("No recent data found - falling back to entry price")
                     closing_price = position.entry_price
             else:
-                self.logger.info(f"Found market data for {lookup_ticker}: {bars.tail(1)}")
-                market_data = bars.iloc[-1].to_dict()
+                market_data = bars.iloc[0].to_dict()
                 closing_price = market_data['close']
+                closing_time = bars.index[0]
 
             # Calculate value (this part remains the same)
             if position.instrument.is_option:
@@ -771,13 +696,12 @@ class BacktestEngine:
             else:
                 value = closing_price
 
-            self.logger.info(f"Attempting to close {ticker} @ {closing_price:.2f}")
-
+            # Close the position using last trading hour timestamp
             success = self.portfolio.close_position(
                 instrument=position.instrument,
                 price=closing_price,
-                timestamp=current_date,
-                transaction_costs=self.market_simulator.calculate_commission(
+                timestamp=closing_time, # type: ignore
+                transaction_costs=self.broker.calculate_commission(
                     closing_price,
                     position.quantity,
                     'option' if position.instrument.is_option else 'stock'
@@ -785,7 +709,7 @@ class BacktestEngine:
             )
 
             if success:
-                self.logger.info(f"Successfully closed position in {ticker} @ {closing_price:.2f}")
+                self.logger.info(f"Automatically closed position in {ticker} @ {closing_price:.2f}")
             else:
                 self.logger.error(f"Failed to close position in {ticker}")
 
@@ -795,4 +719,4 @@ class BacktestEngine:
             for t, p in remaining:
                 self.logger.error(f"  {t}: {p.quantity} units @ {p.entry_price}")
         else:
-            self.logger.info("Successfully closed all positions")
+            self.logger.info("Automatically closed all positions")

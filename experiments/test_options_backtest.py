@@ -1,14 +1,14 @@
 # experiments/test_covered_call.py
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 import os
 import dotenv
 from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
 from ancilla.providers.polygon_data_provider import PolygonDataProvider
 from ancilla.backtesting.engine import BacktestEngine
 from ancilla.backtesting.strategy import Strategy
-from ancilla.backtesting.instruments import Stock, Option
+from ancilla.backtesting.instruments import Stock
 
 dotenv.load_dotenv()
 
@@ -217,8 +217,8 @@ def test_covered_call_strategy():
 
     # Set up test parameters for Q4 2023
     tickers = ["AAPL"]  # Test with a liquid stock
-    start_date = datetime(2023, 11, 1, tzinfo=pytz.UTC)
-    end_date = datetime(2023, 12, 30, tzinfo=pytz.UTC)
+    start_date = datetime(2023, 11, 1)
+    end_date = datetime(2023, 12, 30)
     initial_capital = 100000
 
     # Initialize backtest engine

@@ -28,8 +28,8 @@ class Trade:
         if self.realized_pnl is not None:
             return self.realized_pnl
         multiplier = 100 if self.instrument.is_option else 1
-        if self.instrument.is_option and self.quantity < 0:
-            # Short option
+        if self.quantity < 0:
+            # Short option or stock
             gross_pnl = (self.entry_price - self.exit_price) * abs(self.quantity) * multiplier
         else:
             # Long option or stock
@@ -56,5 +56,6 @@ class Trade:
             'pnl': self.pnl,
             'return_pct': self.return_pct,
             'duration_hours': self.duration_hours,
-            'transaction_costs': self.transaction_costs
+            'transaction_costs': self.transaction_costs,
+            'assignment': self.assignment
         }

@@ -1,7 +1,7 @@
 # experiments/test_backtest.py
 from datetime import datetime
 import pytz
-from typing import Dict, Any, List
+from typing import Dict, Any
 import os
 import dotenv
 
@@ -9,7 +9,6 @@ from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
 from ancilla.providers.polygon_data_provider import PolygonDataProvider
 from ancilla.backtesting.engine import BacktestEngine
 from ancilla.backtesting.strategy import Strategy
-from ancilla.models import OptionData
 
 dotenv.load_dotenv()
 
@@ -44,8 +43,7 @@ class SimpleTestStrategy(Strategy):
                 )
                 success = self.engine.buy_stock(
                     ticker=ticker,
-                    quantity=shares,
-                    timestamp=timestamp
+                    quantity=shares
                 )
                 if success:
                     self.entry_prices[ticker] = data['close']

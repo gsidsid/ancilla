@@ -205,7 +205,7 @@ class BookLogger(BaseLogger):
             raise ValueError("Logger not initialized")
         self.logger.debug(self.option_fmt.format(
             timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=option.instrument.ticker,
+            ticker=option.instrument.ticker, # type: ignore
             strike=option.strike,
             contract_type=option.contract_type,
             expiration=option.expiration.strftime('%Y-%m-%d'),

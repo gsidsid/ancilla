@@ -18,9 +18,20 @@ class SlippageConfig:
     spread_factor: float = 0.5   # Fraction of spread to cross
     market_impact: float = 0.1   # Price impact per 1% of ADV
 
-class MarketSimulator:
-    """Handles realistic market simulation including slippage and commissions."""
+@dataclass
+class ExecutionDetails:
+    """Container for execution-related calculations to avoid redundant computation."""
+    execution_price: float
+    slippage: float
+    commission: float
+    price_impact: float
+    fill_probability: float
+    participation_rate: float
+    total_transaction_costs: float
+    adjusted_quantity: int
 
+class Broker:
+    """Handles realistic broker simulation including slippage and commissions."""
     def __init__(
         self,
         commission_config: Optional[CommissionConfig] = None,
@@ -28,57 +39,113 @@ class MarketSimulator:
     ):
         self.commission_config = commission_config or CommissionConfig()
         self.slippage_config = slippage_config or SlippageConfig()
-        self._market_state = {}  # Cache for market state data
+        self._market_state = {}
 
-    def calculate_execution_price(
+    def calculate_execution_details(
         self,
         ticker: str,
-        price: float,
+        base_price: float,
         quantity: int,
         market_data: Dict[str, Any],
-        direction: int,  # 1 for buy, -1 for sell
         asset_type: str = 'stock'
-    ) -> float:
-        """Calculate realistic execution price with slippage."""
-        # Get market data
+    ) -> Optional[ExecutionDetails]:
+        """
+        Consolidates all execution-related calculations into a single method.
+        Returns all execution details to avoid recalculating values.
+        """
+        # Extract market data once
         volume = market_data.get('volume', 0)
-        high = market_data.get('high', price)
-        low = market_data.get('low', price)
-        # vwap = market_data.get('vwap', price)
+        high = market_data.get('high', base_price)
+        low = market_data.get('low', base_price)
 
-        # Estimate spread
-        spread = (high - low) / price if high > low else 0.001
+        # Calculate direction once
+        direction = 1 if quantity > 0 else -1
 
-        # Calculate volume-based slippage
-        participation_rate = abs(quantity) / volume if volume > 0 else 0
-        vol_slippage = self.slippage_config.vol_impact * participation_rate
+        # Calculate participation rate once
+        participation_rate = abs(quantity) / volume if volume > 0 else 1
 
-        # Calculate spread-based slippage
+        # Calculate adjusted quantity
+        if participation_rate > 0.1:  # Limit to 10% of daily volume
+            adjusted_quantity = int(0.1 * volume) * direction
+        else:
+            adjusted_quantity = quantity
+
+        if adjusted_quantity == 0:
+            return None
+
+        # Calculate liquidity score
+        liquidity_score = self._calculate_liquidity_score(market_data)
+
+        # Calculate base impact components once
+        spread = (high - low) / base_price if high > low else 0.001
+        volume_impact = (participation_rate ** 0.5) * self.slippage_config.market_impact
         spread_slippage = spread * self.slippage_config.spread_factor
 
-        # Calculate market impact
-        market_impact = (
-            self.slippage_config.market_impact *
-            (abs(quantity) / volume) if volume > 0 else 0
-        )
+        # Calculate price impact
+        liquidity_adjustment = (1.5 - liquidity_score)
+        price_impact = (
+            volume_impact * liquidity_adjustment +
+            self.slippage_config.base_points / 10000
+        ) * direction
 
-        # Combine slippage components
+        # Calculate total slippage
         total_slippage = (
-            self.slippage_config.base_points / 10000 +  # Convert bps to decimal
-            vol_slippage +
-            spread_slippage +
-            market_impact
+            self.slippage_config.base_points / 10000 +
+            volume_impact +
+            spread_slippage
         )
 
-        # Apply direction-specific slippage
-        execution_price = price * (1 + direction * total_slippage)
+        # Calculate execution price
+        execution_price = base_price * (1 + direction * total_slippage)
 
         # For options, ensure price respects minimum tick size
         if asset_type == 'option':
-            tick_size = 0.05 if price >= 3.0 else 0.01
+            tick_size = 0.05 if base_price >= 3.0 else 0.01
             execution_price = round(execution_price / tick_size) * tick_size
 
-        return execution_price
+        slippage = execution_price - base_price
+
+        # Calculate commission
+        commission = self.calculate_commission(
+            price=execution_price,
+            quantity=adjusted_quantity,
+            asset_type=asset_type
+        )
+
+        # Calculate fill probability
+        fill_probability = self.estimate_market_hours_fill_probability(
+            price=execution_price,
+            quantity=adjusted_quantity,
+            market_data=market_data,
+            volume=volume,
+            asset_type=asset_type
+        )
+
+        # Calculate total costs
+        total_transaction_costs = commission + abs(slippage)
+
+        return ExecutionDetails(
+            execution_price=execution_price,
+            slippage=slippage,
+            commission=commission,
+            price_impact=price_impact,
+            fill_probability=fill_probability,
+            participation_rate=participation_rate,
+            total_transaction_costs=total_transaction_costs,
+            adjusted_quantity=adjusted_quantity
+        )
+
+
+    def _calculate_liquidity_score(self, market_data: Dict[str, Any]) -> float:
+        """Calculate liquidity score based on market data."""
+        volume = market_data.get('volume', 0)
+        avg_volume = market_data.get('avg_volume', volume)
+        spread = market_data.get('spread', 0.01)
+
+        volume_score = min(1.0, volume / avg_volume if avg_volume > 0 else 0)
+        spread_score = min(1.0, 1 - (spread * 10))  # Penalize wide spreads
+
+        return (volume_score + spread_score) / 2
 
     def calculate_commission(
         self,
@@ -138,71 +205,3 @@ class MarketSimulator:
         else:
             # Options are generally harder to fill
             return 0.85 if abs(quantity) < 10 else 0.70  # Lower probability for larger option orders
-
-    def adjust_for_liquidity(
-        self,
-        quantity: int,
-        market_data: Dict[str, Any],
-        asset_type: str = 'stock'
-    ) -> int:
-        """Adjust order size based on liquidity."""
-        volume = market_data.get('volume', 0)
-
-        if asset_type == 'stock':
-            # Limit to 10% of daily volume by default
-            max_quantity = int(volume * 0.10)
-            return min(abs(quantity), max_quantity) * (1 if quantity > 0 else -1)
-        else:
-            # Options are typically less liquid
-            open_interest = market_data.get('open_interest', 0)
-            max_quantity = int(open_interest * 0.05)  # 5% of open interest
-            return min(abs(quantity), max_quantity) * (1 if quantity > 0 else -1)
-
-    def calculate_overnight_gap_risk(
-        self,
-        current_price: float,
-        avg_true_range: float
-    ) -> float:
-        """Estimate potential overnight gap risk."""
-        # Use 2x ATR as estimate for potential gap
-        return current_price * (avg_true_range * 2)
-
-    def calculate_price_impact(
-        self,
-        base_price: float,
-        quantity: int,
-        daily_volume: float,
-        liquidity_score: float
-    ) -> float:
-        """
-        Calculate price impact of order based on size and liquidity.
-        Returns impact as a percentage of price.
-
-        Args:
-            base_price: Current market price
-            quantity: Order quantity (positive for buy, negative for sell)
-            daily_volume: Daily trading volume
-            liquidity_score: Market liquidity score (0-1)
-
-        Returns:
-            Price impact as a decimal (e.g., 0.001 for 0.1% impact)
-        """
-        # Calculate participation rate
-        participation_rate = abs(quantity) / daily_volume if daily_volume > 0 else 1
-
-        # Base impact from order size
-        volume_impact = (participation_rate ** 0.5) * self.slippage_config.market_impact
-
-        # Adjust for liquidity - less liquid markets have higher impact
-        liquidity_adjustment = (1.5 - liquidity_score)  # ranges from 0.5 to 1.5
-
-        # Apply direction
-        direction = 1 if quantity > 0 else -1
-
-        # Combine components
-        total_impact = (
-            volume_impact * liquidity_adjustment +
-            self.slippage_config.base_points / 10000  # Base impact in decimal
-        ) * direction
-
-        return total_impact

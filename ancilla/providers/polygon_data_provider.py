@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Union, Tuple, Callable, Any
 import numpy as np
 import pandas as pd
 from polygon import RESTClient
+from zoneinfo import ZoneInfo
 import pytz
 import time
 
@@ -830,7 +831,7 @@ class PolygonDataProvider:
             include_holidays: Include holidays as market closed
         """
         if isinstance(date_input, str):
-            date_input = pd.to_datetime(date_input).date()
+            date_input = datetime.fromisoformat(date_input).date()
         if date_input.weekday() >= 5:
             return None
         holidays_2024 = {
@@ -851,14 +852,19 @@ class PolygonDataProvider:
                 return {'is_holiday': True}
             return None
         # Normal open/close times
-        market_open_est = datetime(date_input.year, date_input.month, date_input.day, 9, 30, tzinfo=self.eastern_tz)
-        market_close_est = datetime(date_input.year, date_input.month, date_input.day, 16, 0, tzinfo=self.eastern_tz)
+        market_open_est = datetime(date_input.year, date_input.month, date_input.day, 9, 30)
+        market_open_est = market_open_est.replace(tzinfo=ZoneInfo("America/New_York"))
+
+        market_close_est = datetime(date_input.year, date_input.month, date_input.day, 16, 0)
+        market_close_est = market_close_est.replace(tzinfo=ZoneInfo("America/New_York"))
+
         # Early close checks
         if (date_input.month == 12 and date_input.day == 24):
             market_close_est = market_close_est.replace(hour=13, minute=0)
+
         # Convert to UTC
-        market_open_utc = market_open_est.astimezone(self.utc_tz)
-        market_close_utc = market_close_est.astimezone(self.utc_tz)
+        market_open_utc = market_open_est.astimezone(ZoneInfo("UTC"))
+        market_close_utc = market_close_est.astimezone(ZoneInfo("UTC"))
         return {
             'market_open': market_open_utc,
             'market_close': market_close_utc

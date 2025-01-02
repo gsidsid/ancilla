@@ -207,7 +207,7 @@ class BacktestResults:
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
-                    y=1.012,
+                    y=1.010,
                     xanchor="right",
                     x=0.75,
                     font=dict(family="Arial", size=10, color='white'),
@@ -404,7 +404,7 @@ class BacktestResults:
 
                     position['quantity'] = new_quantity
 
-                    if new_quantity == 0:
+                    if new_quantity == 0 or trade.assignment:
                         del current_holdings[ticker]
 
                 trade_idx += 1
@@ -590,7 +590,7 @@ class BacktestResults:
 
         return metrics
 
-    def summarize(self) -> str:
+    def summarize(self, summarize_trades: bool = True) -> str:
         """Generate a comprehensive performance summary."""
         risk_metrics = self.risk_metrics()
 
@@ -609,7 +609,7 @@ class BacktestResults:
             option_pnls = [t.pnl for t in options_trades]
 
         summary = [
-            "",
+            "\n",
             self.strategy_name + " – performance",
             "=" * 50,
             f"Initial Capital: ${self.initial_capital:,.2f}",
@@ -648,6 +648,67 @@ class BacktestResults:
                 f"Option Win Rate: {len([p for p in option_pnls if p > 0])/len(option_pnls):.2%}",
                 f"Assignment Rate: {len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.2%}"
             ])
+
+        if summarize_trades:
+            trade_summary = "\n=====================TRADES========================\n"
+            # sort trades by entry time
+            self.trades.sort(key=lambda x: x.entry_time)
+            for trade in self.trades:
+                # Create a human-readable summary of all trades
+                trade_metrics = trade.get_metrics()
+
+                # Determine if it was a buy or sell
+                action = "Bought" if trade_metrics['quantity'] > 0 else "Sold"
+                abs_quantity = abs(trade_metrics['quantity'])
+
+                # Format the instrument type
+                if trade_metrics['type'] == 'option':
+                    instrument = f"{trade_metrics['ticker']} {trade_metrics['type']}"
+                else:
+                    instrument = f"shares of {trade_metrics['ticker']}"
+
+                # Date/Time
+                # Ensure timezone is US/Eastern
+                if trade_metrics['entry_time'].tzinfo is None:
+                    entry_time = pd.Timestamp(trade_metrics['entry_time']).tz_localize('UTC').tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
+                else:
+                    entry_time = pd.Timestamp(trade_metrics['entry_time']).tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
+
+                if trade_metrics['exit_time']:
+                    if trade_metrics['exit_time'].tzinfo is None:
+                        exit_time = pd.Timestamp(trade_metrics['exit_time']).tz_localize('UTC').tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
+                    else:
+                        exit_time = pd.Timestamp(trade_metrics['exit_time']).tz_convert('US/Eastern').strftime('%Y-%m-%d %H:%M')
+                else:
+                    exit_time = None
+
+                # Format prices and P&L
+                entry_price = "${:,.2f}".format(trade_metrics['entry_price'])
+                exit_price = "${:,.2f}".format(trade_metrics['exit_price'])
+                pnl = trade_metrics['pnl']
+                pnl_str = "${:,.2f}".format(abs(pnl))
+
+                # Create the trade description
+                trade_desc = f"{action} {abs_quantity} {instrument} at {entry_price} on {entry_time}, "
+                if trade_metrics['exit_time']:
+                    # Check if trade was closed due to assignment/expiration
+                    if trade_metrics.get('assignment', False):
+                        trade_desc += f"assigned/expired at {exit_price} on {exit_time} with a "
+                    else:
+                        trade_desc += f"closed at {exit_price} on {exit_time} with a "
+                    trade_desc += f"{'profit' if pnl > 0 else 'loss'} of {pnl_str}"
+                else:
+                    trade_desc += "position still open"
+
+                # Add duration if closed
+                if trade_metrics['exit_time']:
+                    duration_days = trade_metrics['duration_hours'] / 24
+                    trade_desc += f" (held for {duration_days:.1f} days)"
+
+                trade_summary += trade_desc + "\n"
+
+            summary.extend([trade_summary])
+
         return "\n".join(summary)
 
     def _prepare_summary_data(self) -> List[List[str]]:
@@ -743,16 +804,16 @@ class BacktestResults:
         # Compare with actual final capital
         if not np.isclose(expected_final_capital, actual_final_capital, atol=1e-2):
             engine.logger.warning(
-                f"Discrepancy detected:\n"
-                f"Expected Final Capital: {expected_final_capital}\n"
-                f"Actual Final Capital: {actual_final_capital}\n"
-                f"Debug Info:\n "
-                f"Realized PnL: {realized_pnl}\n"
-                f"Initial Capital: {engine.initial_capital}\n"
-                f"Total Transaction Costs: {total_transaction_costs}"
-                f"Net Opening Cash Flows: {net_opening_cash_flows}"
-                f"Total Commission: {total_commission}\n"
-                f"Total Slippage: {total_slippage}"
+                f"Discrepancy detected during trade reconciliation:\n"
+                f"\tExpected Final Capital: {expected_final_capital}\n"
+                f"\tActual Final Capital: {actual_final_capital}\n"
+                f"\nDebug Info:\n "
+                f"\tRealized PnL: {realized_pnl}\n"
+                f"\tInitial Capital: {engine.initial_capital}\n"
+                f"\tTotal Transaction Costs: {total_transaction_costs}\n"
+                f"\tNet Opening Cash Flows: {net_opening_cash_flows}\n"
+                f"\tTotal Commission: {total_commission}\n"
+                f"\tTotal Slippage: {total_slippage}\n"
             )
 
         # Compile results
