@@ -1495,3 +1495,260 @@ class TestBacktesting(unittest.TestCase):
         expected_cash += sell_price * abs(option_quantity) * option.get_multiplier() - sell_costs
 
         self.assertEqual(portfolio.cash, expected_cash, "Cash should be reduced by transaction costs after successful short option trade.")
+
+
+    ############################################################
+    #               TRADE OPENING & CLOSING
+    ############################################################
+
+    def test_position_additions_and_closures(self):
+        self.logger.info("=== Starting Position Additions and Closures Test ===")
+
+        # Initialize portfolio
+        initial_capital = 100000
+        portfolio = Portfolio("position_additions_portfolio", initial_capital)
+
+        # Create stock instrument
+        stock = Stock(ticker="AAPL")
+
+        # Initial position open
+        initial_quantity = 100
+        initial_price = 175.00
+        initial_costs = 5.00
+
+        self.logger.info("\n=== Trade 1: Initial AAPL Stock Purchase ===")
+        portfolio.open_position(
+            instrument=stock,
+            quantity=initial_quantity,
+            price=initial_price,
+            timestamp=datetime(2023, 12, 1, 14, 0, tzinfo=pytz.UTC),
+            transaction_costs=initial_costs
+        )
+
+        # Verify initial position
+        self.assertIn(stock.ticker, portfolio.positions, "Initial stock position should be added")
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, initial_quantity, "Initial quantity should be correct")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, initial_price, "Initial entry price should be correct")
+
+        # Add to position
+        additional_quantity = 50
+        additional_price = 180.00
+        additional_costs = 3.00
+
+        self.logger.info("\n=== Trade 2: Adding to AAPL Position ===")
+        portfolio.open_position(
+            instrument=stock,
+            quantity=additional_quantity,
+            price=additional_price,
+            timestamp=datetime(2023, 12, 2, 14, 0, tzinfo=pytz.UTC),
+            transaction_costs=additional_costs
+        )
+
+        # Calculate expected weighted average price
+        expected_total_value = (initial_quantity * initial_price) + (additional_quantity * additional_price)
+        expected_total_quantity = initial_quantity + additional_quantity
+        expected_avg_price = expected_total_value / expected_total_quantity
+        expected_total_costs = initial_costs + additional_costs
+
+        # Verify combined position
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, expected_total_quantity, "Combined quantity should be correct")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, expected_avg_price, "Weighted average price should be correct")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_transaction_costs, expected_total_costs, "Combined transaction costs should be correct")
+
+        # Partial close
+        close_quantity = 75
+        close_price = 185.00
+        close_costs = 4.00
+
+        self.logger.info("\n=== Trade 3: Partial Close of AAPL Position ===")
+        portfolio.close_position(
+            instrument=stock,
+            price=close_price,
+            timestamp=datetime(2023, 12, 3, 14, 0, tzinfo=pytz.UTC),
+            quantity=close_quantity,
+            transaction_costs=close_costs
+        )
+
+        # Verify remaining position
+        expected_remaining_quantity = expected_total_quantity - close_quantity
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, expected_remaining_quantity, "Remaining quantity should be correct")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, expected_avg_price, "Entry price should remain unchanged")
+
+        # Calculate expected remaining entry costs (proportional)
+        expected_remaining_costs = expected_total_costs * (expected_remaining_quantity / expected_total_quantity)
+        self.assertAlmostEqual(
+            portfolio.positions[stock.ticker].entry_transaction_costs,
+            expected_remaining_costs,
+            places=2,
+            msg="Remaining entry costs should be proportional"
+        )
+
+        # Full close
+        final_close_price = 190.00
+        final_close_costs = 3.00
+
+        self.logger.info("\n=== Trade 4: Full Close of Remaining AAPL Position ===")
+        portfolio.close_position(
+            instrument=stock,
+            price=final_close_price,
+            timestamp=datetime(2023, 12, 4, 14, 0, tzinfo=pytz.UTC),
+            quantity=expected_remaining_quantity,
+            transaction_costs=final_close_costs
+        )
+
+        # Verify position is fully closed
+        self.assertNotIn(stock.ticker, portfolio.positions, "Position should be fully closed")
+
+        # Verify all trades were recorded
+        self.assertEqual(len(portfolio.trades), 2, "Should have two closing trades recorded")
+
+        # Verify trade objects
+        partial_close_trade = portfolio.trades[0]
+        self.assertEqual(partial_close_trade.quantity, close_quantity, "First trade quantity should match partial close")
+        self.assertEqual(partial_close_trade.exit_price, close_price, "First trade exit price should match partial close")
+
+        final_close_trade = portfolio.trades[1]
+        self.assertEqual(final_close_trade.quantity, expected_remaining_quantity, "Second trade quantity should match final close")
+        self.assertEqual(final_close_trade.exit_price, final_close_price, "Second trade exit price should match final close")
+
+        # Verify cash impacts
+        expected_final_cash = (
+            initial_capital
+            - (initial_quantity * initial_price + initial_costs)  # Initial purchase
+            - (additional_quantity * additional_price + additional_costs)  # Addition to position
+            + (close_quantity * close_price - close_costs)  # Partial close
+            + (expected_remaining_quantity * final_close_price - final_close_costs)  # Final close
+        )
+
+        self.assertAlmostEqual(
+            portfolio.cash,
+            expected_final_cash,
+            places=2,
+            msg="Final cash should reflect all transactions"
+        )
+
+    def test_short_position_additions_and_closures(self):
+        self.logger.info("=== Starting Short Position Additions and Closures Test ===")
+
+        # Initialize portfolio
+        initial_capital = 100000
+        portfolio = Portfolio("short_position_portfolio", initial_capital)
+
+        # Create stock instrument
+        stock = Stock(ticker="AAPL")
+
+        # Initial short position
+        initial_quantity = -100  # Start with short 100
+        initial_price = 175.00
+        initial_costs = 5.00
+
+        self.logger.info("\n=== Trade 1: Initial AAPL Short Sale ===")
+        portfolio.open_position(
+            instrument=stock,
+            quantity=initial_quantity,
+            price=initial_price,
+            timestamp=datetime(2023, 12, 1, 14, 0, tzinfo=pytz.UTC),
+            transaction_costs=initial_costs
+        )
+
+        # Verify initial position
+        self.assertIn(stock.ticker, portfolio.positions, "Initial short position should be added")
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, initial_quantity, "Initial short quantity should be negative")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, initial_price, "Initial entry price should be correct")
+
+        # Add to short position (make it more negative)
+        additional_quantity = -50  # Short 50 more
+        additional_price = 180.00
+        additional_costs = 3.00
+
+        self.logger.info("\n=== Trade 2: Adding to AAPL Short Position ===")
+        portfolio.open_position(
+            instrument=stock,
+            quantity=additional_quantity,
+            price=additional_price,
+            timestamp=datetime(2023, 12, 2, 14, 0, tzinfo=pytz.UTC),
+            transaction_costs=additional_costs
+        )
+
+        # Calculate expected weighted average price
+        expected_total_value = (abs(initial_quantity) * initial_price) + (abs(additional_quantity) * additional_price)
+        expected_total_quantity = initial_quantity + additional_quantity  # Should be -150
+        expected_avg_price = expected_total_value / abs(expected_total_quantity)
+        expected_total_costs = initial_costs + additional_costs
+
+        # Verify combined position
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, expected_total_quantity, "Combined short quantity should be -150")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, expected_avg_price, "Weighted average price should be correct")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_transaction_costs, expected_total_costs, "Combined transaction costs should be correct")
+
+        # Partial cover (close part of short)
+        cover_quantity = 60  # Cover 60 shares (should make position less negative)
+        cover_price = 170.00  # Covering at a profit
+        cover_costs = 4.00
+
+        self.logger.info("\n=== Trade 3: Partial Cover of AAPL Short Position ===")
+        portfolio.close_position(
+            instrument=stock,
+            price=cover_price,
+            timestamp=datetime(2023, 12, 3, 14, 0, tzinfo=pytz.UTC),
+            quantity=cover_quantity,
+            transaction_costs=cover_costs
+        )
+
+        # Verify remaining position
+        expected_remaining_quantity = expected_total_quantity + cover_quantity  # Should be -90
+        self.assertEqual(portfolio.positions[stock.ticker].quantity, expected_remaining_quantity, "Remaining short quantity should be -90")
+        self.assertEqual(portfolio.positions[stock.ticker].entry_price, expected_avg_price, "Entry price should remain unchanged")
+
+        # Calculate expected remaining entry costs (proportional)
+        expected_remaining_costs = expected_total_costs * (abs(expected_remaining_quantity) / abs(expected_total_quantity))
+        self.assertAlmostEqual(
+            portfolio.positions[stock.ticker].entry_transaction_costs,
+            expected_remaining_costs,
+            places=2,
+            msg="Remaining entry costs should be proportional"
+        )
+
+        # Full cover (close remaining short)
+        final_cover_price = 165.00  # Covering remaining at a profit
+        final_cover_costs = 3.00
+
+        self.logger.info("\n=== Trade 4: Full Cover of Remaining AAPL Short Position ===")
+        portfolio.close_position(
+            instrument=stock,
+            price=final_cover_price,
+            timestamp=datetime(2023, 12, 4, 14, 0, tzinfo=pytz.UTC),
+            quantity=abs(expected_remaining_quantity),  # Cover the remaining 90 shares
+            transaction_costs=final_cover_costs
+        )
+
+        # Verify position is fully closed
+        self.assertNotIn(stock.ticker, portfolio.positions, "Position should be fully closed")
+
+        # Verify all trades were recorded
+        self.assertEqual(len(portfolio.trades), 2, "Should have two covering trades recorded")
+
+        # Verify trade objects
+        partial_cover_trade = portfolio.trades[0]
+        self.assertEqual(partial_cover_trade.quantity, cover_quantity, "First trade quantity should match partial cover")
+        self.assertEqual(partial_cover_trade.exit_price, cover_price, "First trade exit price should match partial cover")
+
+        final_cover_trade = portfolio.trades[1]
+        self.assertEqual(final_cover_trade.quantity, abs(expected_remaining_quantity), "Second trade quantity should match final cover")
+        self.assertEqual(final_cover_trade.exit_price, final_cover_price, "Second trade exit price should match final cover")
+
+        # Verify cash impacts
+        expected_final_cash = (
+            initial_capital
+            + (abs(initial_quantity) * initial_price - initial_costs)  # Initial short sale
+            + (abs(additional_quantity) * additional_price - additional_costs)  # Addition to short
+            - (cover_quantity * cover_price + cover_costs)  # Partial cover
+            - (abs(expected_remaining_quantity) * final_cover_price + final_cover_costs)  # Final cover
+        )
+
+        self.assertAlmostEqual(
+            portfolio.cash,
+            expected_final_cash,
+            places=2,
+            msg="Final cash should reflect all short transactions"
+        )
