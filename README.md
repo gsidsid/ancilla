@@ -18,4 +18,4 @@ Currently featuring:
 
 Requires *Polygon.io* starter subscriptions for data access.
 
-![Lightning Mcqueen](lightningmcqueen.jpeg)
+![Lightning Mcqueen](cars/lightningmcqueen.jpeg)
