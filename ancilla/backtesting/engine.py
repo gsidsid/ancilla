@@ -108,6 +108,11 @@ class Backtest:
         market_data[ticker] = data
         market_data_ticker = data
 
+        if ticker not in self.tickers:
+            self.tickers.append(ticker)
+        if ticker not in self.market_data:
+            self.market_data.update(market_data)
+
         # Get target price
         price = market_data_ticker.get('close', 0)
         if price is None:
@@ -356,6 +361,7 @@ class Backtest:
         current_date = self.start_date
         consecutive_no_data = 0
         max_no_data_days = 5
+        last_market_close = self.start_date
 
         eastern_tz = pytz.timezone('US/Eastern')
         utc_tz = pytz.UTC
@@ -386,18 +392,8 @@ class Backtest:
                         self.tickers.append(option_ticker)
 
             # Remove expired options from ticker list
-            active_tickers = []
-            for ticker in self.tickers:
-                if len(ticker) > 6:  # Is an option ticker
-                    option = Option.from_option_ticker(ticker)
-                    if option.expiration.date() >= current_date.date():
-                        active_tickers.append(ticker)
-                    else:
-                        # Also remove from market_data if expired
-                        if ticker in self.market_data:
-                            del self.market_data[ticker]
-                else:
-                    active_tickers.append(ticker)
+            self.tickers = self._filter_expired_tickers(current_date)
+            active_tickers = set(self.tickers)
 
             # Convert dates to UTC for data fetching
             fetch_start_utc = current_date.astimezone(utc_tz)
@@ -439,7 +435,7 @@ class Backtest:
                 # Process each hour of the trading day
                 current_time = market_open
                 while current_time <= market_close:
-                    market_data = {}
+                    market_data = self.market_data
                     has_data = False
 
                     # Extract relevant data for current hour from weekly data
@@ -518,6 +514,7 @@ class Backtest:
                 # Process option expirations at end of day (using Eastern time)
                 eastern_current_date = current_date.astimezone(eastern_tz)
                 eastern_market_close = market_close.astimezone(eastern_tz)
+                last_market_close = eastern_market_close
                 self._process_option_expiration(eastern_current_date, eastern_market_close)
 
                 current_date += timedelta(days=1)
@@ -525,8 +522,7 @@ class Backtest:
                     current_date = eastern_tz.localize(current_date)
 
         # Close remaining positions at end of backtest
-        final_date = (current_date - timedelta(days=1)).astimezone(eastern_tz)
-        self._close_all_positions(final_date)
+        self._close_all_positions(last_market_close)
 
         # Calculate and return results
         from ancilla.backtesting.results import BacktestResults
@@ -536,33 +532,38 @@ class Backtest:
 
     def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
         """
-        Handle option expiration and assignments with careful cash flow tracking.
-        Process:
-        1. Identify expiring positions
-        2. Calculate all values first
-        3. Process assignments and handle position changes
-        4. Record trades by directly interacting with the portfolio's handle_assignment and handle_exercise methods
+        Handle option expiration and assignments.
         """
-        if expiration_time.hour < 16:  # Only process at market close
+        option_positions = [
+                pos for pos in self.portfolio.positions.values()
+                if (isinstance(pos.instrument, Option) and
+                    pos.instrument.expiration.date() == current_date.date())
+            ]
+
+        if not option_positions:
             return
 
-        # Get expiring options
-        option_positions = [
-            pos for pos in self.portfolio.positions.values()
-            if (pos.instrument.is_option and
-                pos.instrument.expiration.date() == current_date.date())
-        ]
+        # Then check if we're at Friday 4 PM
+        is_expiration_time = (
+            expiration_time.hour == 16 and
+            expiration_time.minute == 0 and
+            expiration_time.weekday() == 4  # Friday
+        )
+
+        if not is_expiration_time:
+            return
 
         for position in option_positions:
-            option = position.instrument
+            option: Option = position.instrument # type: ignore
             ticker = option.format_option_ticker()
             underlying_ticker = option.underlying_ticker
 
             # Get final underlying price
+            expiry_close = expiration_time.replace(hour=16, minute=0)
             underlying_data = self.data_provider.get_intraday_bars(
                 ticker=underlying_ticker,
-                start_date=expiration_time - timedelta(hours=1),
-                end_date=expiration_time,
+                start_date=expiry_close,
+                end_date=expiry_close + timedelta(minutes=1),
                 interval='1hour'
             )
 
@@ -574,10 +575,13 @@ class Backtest:
             self.logger.info(f"Processing expiration for {ticker} with underlying at ${underlying_close:.2f}")
 
             # Calculate intrinsic value
-            if option.instrument_type == InstrumentType.CALL_OPTION:
-                intrinsic_value = max(underlying_close - option.strike, 0)
-            else:
-                intrinsic_value = max(option.strike - underlying_close, 0)
+            intrinsic_value = 0.0
+            if isinstance(option, Option):
+                if underlying_close:
+                    if option.instrument_type == InstrumentType.CALL_OPTION:
+                        intrinsic_value = max(underlying_close - option.strike, 0)
+                    else:
+                        intrinsic_value = max(option.strike - underlying_close, 0)
 
             # Determine if option is in-the-money (ITM)
             MIN_ITM_THRESHOLD = 0.01
@@ -591,17 +595,21 @@ class Backtest:
                         # Short Call Assignment: Sell underlying stock at strike price
                         self.portfolio.handle_assignment(
                             option=option,
+                            market_data=self.market_data,
                             strike_price=option.strike,
                             timestamp=expiration_time,
-                            is_call=True
+                            is_call=True,
+                            broker=self.broker
                         )
                     elif option.instrument_type == InstrumentType.PUT_OPTION:
                         # Short Put Assignment: Buy underlying stock at strike price
                         self.portfolio.handle_assignment(
                             option=option,
+                            market_data=self.market_data,
                             strike_price=option.strike,
                             timestamp=expiration_time,
-                            is_call=False
+                            is_call=False,
+                            broker=self.broker
                         )
                 else:
                     # Long Option Exercise
@@ -609,17 +617,23 @@ class Backtest:
                         # Long Call Exercise: Buy underlying stock at strike price
                         self.portfolio.handle_exercise(
                             option=option,
+                            market_data=self.market_data,
                             strike_price=option.strike,
                             timestamp=expiration_time,
-                            is_call=True
+                            is_call=True,
+                            intrinsic_value=intrinsic_value,
+                            broker=self.broker
                         )
                     elif option.instrument_type == InstrumentType.PUT_OPTION:
                         # Long Put Exercise: Sell underlying stock at strike price
                         self.portfolio.handle_exercise(
                             option=option,
+                            market_data=self.market_data,
                             strike_price=option.strike,
                             timestamp=expiration_time,
-                            is_call=False
+                            is_call=False,
+                            intrinsic_value=intrinsic_value,
+                            broker=self.broker
                         )
             else:
                 # Option expires worthless
@@ -659,50 +673,15 @@ class Backtest:
             )
 
     def _close_all_positions(self, current_date: datetime):
-        self.logger.info("End of test– automatically closing all positions")
+        self.logger.info("End of test – automatically closing all positions")
         positions_to_close = list(self.portfolio.positions.items())
         self.logger.info(f"Found {len(positions_to_close)} open positions")
         for t, p in positions_to_close:
             self.logger.info(f"  {t}: {p.quantity} units @ {p.entry_price}")
 
         for ticker, position in positions_to_close:
-            # Use the actual position ticker for lookup, not the underlying
-            lookup_ticker = ticker  # This is the key change
             closing_time = current_date.replace(hour=16, minute=0, second=0)
-
-            bars = self.data_provider.get_intraday_bars(
-                ticker=lookup_ticker,
-                start_date=current_date,
-                end_date=current_date,
-                interval='1hour'
-            )
-
-            if bars is None or bars.empty:
-                # Try to get data from the last week
-                historical_bars = self.data_provider.get_intraday_bars(
-                    ticker=lookup_ticker,
-                    start_date=current_date,
-                    end_date=current_date,
-                    interval='1hour'
-                )
-
-                if historical_bars is not None and not historical_bars.empty:
-                    closing_price = historical_bars.iloc[0]['close']
-                    closing_time = historical_bars.index[0]
-                else:
-                    self.logger.warning("No recent data found - falling back to entry price")
-                    closing_price = position.entry_price
-            else:
-                market_data = bars.iloc[0].to_dict()
-                closing_price = market_data['close']
-                closing_time = bars.index[0]
-
-            # Calculate value (this part remains the same)
-            if position.instrument.is_option:
-                multiplier = position.instrument.get_multiplier()
-                value = closing_price * multiplier
-            else:
-                value = closing_price
+            closing_price = self.market_data[ticker]['close']
 
             # Close the position using last trading hour timestamp
             success = self.portfolio.close_position(
@@ -728,3 +707,54 @@ class Backtest:
                 self.logger.error(f"  {t}: {p.quantity} units @ {p.entry_price}")
         else:
             self.logger.info("Automatically closed all positions")
+
+    def _filter_expired_tickers(self, current_date):
+        """
+        Filter out expired options from ticker list and clean up market data.
+        Only removes tickers that have been expired for more than a week.
+
+        Args:
+            current_date: datetime object representing the current date
+
+        Returns:
+            list: Active tickers that haven't expired
+        """
+        active_tickers = []
+        expiration_buffer = timedelta(days=7)
+
+        # Ensure current_date is a datetime and timezone-aware
+        if not isinstance(current_date, datetime):
+            raise TypeError(f"current_date must be a datetime object, got {type(current_date)}")
+
+        if current_date.tzinfo is None:
+            current_date = current_date.replace(tzinfo=pytz.UTC)
+
+        for ticker in self.tickers:
+            # Standard tickers (non-options) are always active
+            if len(ticker) <= 6:
+                active_tickers.append(ticker)
+                continue
+
+            try:
+                # Parse option ticker
+                option = Option.from_option_ticker(ticker)
+                expiration_date = option.expiration
+
+                # Ensure expiration_date is timezone-aware
+                if expiration_date.tzinfo is None:
+                    expiration_date = expiration_date.replace(tzinfo=pytz.UTC)
+
+                # Calculate removal date as expiration date + buffer
+                removal_date = expiration_date + expiration_buffer
+
+                # Compare current date against removal date
+                if current_date > removal_date:
+                    self.market_data.pop(ticker, None)
+                else:
+                    active_tickers.append(ticker)
+
+            except (ValueError, AttributeError) as e:
+                self.logger.warning(f"Error processing option ticker {ticker}: {str(e)}")
+                continue
+
+        return active_tickers

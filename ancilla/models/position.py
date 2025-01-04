@@ -14,6 +14,7 @@ class Position:
     entry_date: datetime
     entry_transaction_costs: float = 0.0
     assignment: bool = False
+    exercised: bool = False
 
     @property
     def cost_basis(self) -> float:

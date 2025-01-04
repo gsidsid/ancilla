@@ -564,24 +564,17 @@ class BacktestResults:
             Number of days between entry_date and option expiration
         """
         try:
-            # Parse expiration from O:AAPL240126C00190000 format
+            # Parse expiration from an option ticker
             parts = ticker.split(':')
             if len(parts) != 2:
                 raise ValueError(f"Invalid ticker format: {ticker}")
-
-            symbol_part = parts[1]  # AAPL240126C00190000
-            date_part = symbol_part[4:10]  # 240126
-
-            # Create timezone-naive expiry date
+            symbol_part = parts[1]
+            date_part = symbol_part[4:10]
             expiry = datetime.strptime(f"20{date_part}", "%Y%m%d")
-
-            # If entry_date is timezone-aware, convert expiry to match
             if entry_date.tzinfo is not None:
                 expiry = expiry.replace(tzinfo=entry_date.tzinfo)
-            # If entry_date is timezone-naive, ensure expiry is also naive
             elif expiry.tzinfo is not None:
                 expiry = expiry.replace(tzinfo=None)
-
             days = (expiry - entry_date).days
             return days
 
@@ -694,16 +687,14 @@ class BacktestResults:
                 pnl = metrics.get('pnl', 0.0)
                 assignment = metrics.get('assignment', False)
                 exercised = metrics.get('exercised', False)
-                option_type = str(metrics.get('option_type', None))  # 'call_option' or 'put_option'
+                expiration = metrics.get('expiration', None)
+                option_type = str(metrics.get('option_type', None))
                 strike = metrics.get('strike', 0.0)
                 option_ticker = metrics.get('option_ticker', '')
                 duration_hours = metrics.get('duration_hours', 0)
 
                 # Determine if the trade is an option or shares
                 is_option = trade_type == 'option'
-
-                # Determine the action based on quantity and type
-                entry_action = "Bought" if quantity > 0 else "Sold"
 
                 # Format the instrument description
                 if is_option:
@@ -715,7 +706,7 @@ class BacktestResults:
                 else:
                     instrument = f"{abs(quantity)} shares of {ticker}"
 
-                # Format the entry time
+                # Format timestamps
                 def format_time(timestamp):
                     if not timestamp:
                         return "N/A"
@@ -729,72 +720,52 @@ class BacktestResults:
                 formatted_entry_time = format_time(entry_time)
                 formatted_exit_time = format_time(exit_time) if exit_time else "N/A"
 
-                # Format prices
-                entry_price_str = f"${entry_price:,.2f}"
-                # For exit_price, use special handling based on flags
-                exit_price_str = f"at ${exit_price:,.2f}" if exit_price > 0 else "worthless"
-                if is_option:
-                    if exercised:
-                        exit_price_str = f"at strike price ${strike:,.2f}"
-                    elif assignment:
-                        exit_price_str = f"at strike price ${strike:,.2f}"
+                # Determine entry action
+                entry_action = "Bought" if quantity > 0 else "Sold"
 
-                # Determine P&L status
+                # Format P&L
                 pnl_status = "profit" if pnl > 0 else "loss"
                 pnl_str = f"${abs(pnl):,.2f}"
 
-                # Start building the trade description with entry action
-                trade_desc = f"{entry_action} {instrument} at {entry_price_str} on {formatted_entry_time},\n\t"
+                # Start building trade description
+                trade_desc = f"{entry_action} {instrument} at ${entry_price:.2f} on {formatted_entry_time},\n\t"
 
-                # Determine the exit action
+                # Handle exit description
                 if exit_time:
                     if is_option:
-                        if exercised:
-                            # Since the option was exercised, it is in-the-money
-                            itm_status = "in-the-money"
-                            if option_type == 'call_option':
-                                exit_action = f"exercised {itm_status} call option {exit_price_str}"
-                            elif option_type == 'put_option':
-                                exit_action = f"exercised {itm_status} put option {exit_price_str}"
+                        if quantity < 0:  # Short option
+                            if assignment:
+                                exit_action = f"expired ITM and was assigned at ${strike:.2f}"
                             else:
-                                exit_action = f"exercised option {exit_price_str}"
-
-                            # Optionally, mention resulting action if applicable
-                            if option_type == 'call_option' and quantity > 0:
-                                shares_bought = abs(quantity) * 100
-                                exit_action += f", resulting in purchasing {shares_bought} shares of {ticker}"
-                            elif option_type == 'put_option' and quantity < 0:
-                                shares_sold = abs(quantity) * 100
-                                exit_action += f", resulting in selling {shares_sold} shares of {ticker}"
-
+                                exit_action = "expired OTM"
                             trade_desc += f"{exit_action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
-                        elif assignment:
-                            # Since the option was assigned, it is in-the-money
-                            itm_status = "in-the-money"
-                            if option_type == 'call_option':
-                                exit_action = f"assigned {itm_status} call option {exit_price_str}"
-                            elif option_type == 'put_option':
-                                exit_action = f"assigned {itm_status} put option {exit_price_str}"
+                        else:  # Long option
+                            if exercised:
+                                exit_action = f"exercised at ${strike:.2f}"
                             else:
-                                exit_action = f"assigned option {exit_price_str}"
+                                if exit_time and exit_time < expiration:  # Early close
+                                    exit_action = f"closed at ${exit_price:.2f}"
+                                else:  # True expiration
+                                    exit_action = "expired worthless"
                             trade_desc += f"{exit_action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
+                    else:  # Stock trades
+                        if assignment:
+                            exit_action = "called away" if quantity > 0 else "assigned"
+                            trade_desc += f"{exit_action} at ${exit_price:.2f}"
                         else:
-                            # Handle expiration
-                            action = f"expired at {exit_price_str}"
-                            trade_desc += f"{action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
-                    else:
-                        # For shares
-                        exit_action = "called away" if assignment else "closed"
-                        trade_desc += f"{exit_action} at {exit_price_str} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
+                            exit_action = "closed"
+                            trade_desc += f"{exit_action} at ${exit_price:.2f}"
+
+                        trade_desc += f" on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
+
+                    # Add duration for closed trades
+                    if exit_time:
+                        duration_days = duration_hours / 24
+                        trade_desc += f" (held for {duration_days:.1f} days)"
                 else:
                     trade_desc += "position still open"
 
-                # Add duration if the trade is closed
-                if exit_time:
-                    duration_days = duration_hours / 24
-                    trade_desc += f" (held for {duration_days:.1f} days)"
-
-                # Append the trade description to the summary
+                # Append the trade description
                 trade_summary += trade_desc + "\n"
 
             summary.extend([trade_summary])

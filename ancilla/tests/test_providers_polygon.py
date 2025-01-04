@@ -1,4 +1,3 @@
-# test_polygon_provider.py
 import os
 import pytest
 import dotenv

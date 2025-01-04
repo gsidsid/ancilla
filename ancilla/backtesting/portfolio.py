@@ -1,12 +1,16 @@
 # ancilla/backtesting/portfolio.py
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any, TYPE_CHECKING
 
+from ancilla.backtesting.configuration import Broker
 from ancilla.models import Trade, Position, Instrument, InstrumentType, Stock
 from ancilla.utils.logging import BookLogger
 
+if TYPE_CHECKING:
+    from ancilla.backtesting.configuration import Broker
+
 class Portfolio:
-    """Portfolio class"""
+    """Manages capital, positions, and trades during backtests."""
 
     def __init__(self, name: str, initial_capital: float):
         self.initial_capital = initial_capital
@@ -26,163 +30,156 @@ class Portfolio:
     def get_position_value(self, market_prices: Optional[Dict[str, float]] = None) -> float:
         """Get the total value of all open positions."""
         total_value = 0
-
-        # First calculate stock values
         for ticker, position in self.positions.items():
             if not position.instrument.is_option:
                 if market_prices and ticker in market_prices:
                     price = market_prices[ticker]
                 else:
                     price = position.entry_price
-
                 if price is not None:
                     value = position.quantity * price
                     total_value += value
-
-        # Then calculate option values
         for ticker, position in self.positions.items():
             if position.instrument.is_option:
                 if market_prices and ticker in market_prices:
                     price = market_prices[ticker]
                 else:
                     price = position.entry_price
-
                 if price is not None:
                     multiplier = position.instrument.get_multiplier()
-                    # For short positions, liability is positive price * multiplier
-                    # For long positions, asset is positive price * multiplier
-                    value = -position.quantity * price * multiplier  # Note the negative sign!
+                    value = position.quantity * price * multiplier
                     total_value += value
-
         return total_value
 
     def get_total_value(self, market_prices: Optional[Dict[str, float]] = None) -> float:
         """Get the total value of the portfolio."""
         position_value = self.get_position_value(market_prices)
         total = self.cash + position_value
-
         return total
 
     def open_position(
-            self,
-            instrument: Instrument,
-            quantity: int,
-            price: float,
-            timestamp: datetime,
-            transaction_costs: float = 0.0,
-            allow_naked_calls: bool = False,
-            is_assignment: bool = False
-        ) -> bool:
-            """Open or add to a position with accurate cash flow tracking."""
-            if (instrument.is_option
-                and instrument.instrument_type == InstrumentType.CALL_OPTION
-                and quantity < 0  # Short call
-                and not instrument.naked):  # type: ignore
+        self,
+        instrument: Instrument,
+        quantity: int,
+        price: float,
+        timestamp: datetime,
+        transaction_costs: float = 0.0,
+        allow_naked_calls: bool = False,
+        is_assignment: bool = False,
+        is_exercise: bool = False
+    ) -> bool:
+        """Open or add to a position with accurate cash flow tracking."""
+        if (instrument.is_option
+            and instrument.instrument_type == InstrumentType.CALL_OPTION
+            and quantity < 0  # Short call
+            and not instrument.naked):  # type: ignore
 
-                required_shares = abs(quantity) * instrument.get_multiplier()
-                if (instrument.underlying_ticker not in self.positions
-                    or self.positions[instrument.underlying_ticker].quantity < required_shares):
-                        self.logger.get_logger().warning(
-                            f"Insufficient shares for covered call: need {required_shares}, "
-                            f"have {self.positions.get(instrument.underlying_ticker, Position(instrument, 0, 0, timestamp)).quantity}"
-                        )
-                        return False
+            required_shares = abs(quantity) * instrument.get_multiplier()
+            if (instrument.underlying_ticker not in self.positions
+                or self.positions[instrument.underlying_ticker].quantity < required_shares):
+                    self.logger.get_logger().warning(
+                        f"Insufficient shares for covered call: need {required_shares}, "
+                        f"have {self.positions.get(instrument.underlying_ticker, Position(instrument, 0, 0, timestamp)).quantity}"
+                    )
+                    return False
 
-            multiplier = instrument.get_multiplier()
-            ticker = instrument.ticker
-            if instrument.is_option:
-                ticker = instrument.format_option_ticker()
+        multiplier = instrument.get_multiplier()
+        ticker = instrument.ticker
+        if instrument.is_option:
+            ticker = instrument.format_option_ticker()
 
-            cash_impact = 0.0  # Initialize cash impact
+        cash_impact = 0.0
 
-            if instrument.is_option:
-                is_covered_call = (
-                    instrument.instrument_type == InstrumentType.CALL_OPTION
-                    and quantity < 0
-                    and instrument.underlying_ticker in self.positions
-                    and self.positions[instrument.underlying_ticker].quantity > 0
-                )
+        if instrument.is_option:
+            is_covered_call = (
+                instrument.instrument_type == InstrumentType.CALL_OPTION
+                and quantity < 0
+                and instrument.underlying_ticker in self.positions
+                and self.positions[instrument.underlying_ticker].quantity > 0
+            )
 
-                if is_covered_call:
-                    # Selling a covered call: Receive premium
-                    cash_impact = (price * abs(quantity) * multiplier) - transaction_costs
-                else:
-                    if quantity > 0:
-                        # Buying an option: Pay premium
-                        cash_impact = -(price * quantity * multiplier) - transaction_costs
-                    else:
-                        # Selling an option: Receive premium
-                        cash_impact = (price * abs(quantity) * multiplier) - transaction_costs
+            if is_covered_call:
+                # Selling a covered call: Receive premium
+                cash_impact = (price * abs(quantity) * multiplier) - transaction_costs
             else:
                 if quantity > 0:
-                    # Buying stock: Pay for stocks
-                    cash_impact = -(price * quantity) - transaction_costs
+                    # Buying an option: Pay premium
+                    cash_impact = -(price * quantity * multiplier) - transaction_costs
                 else:
-                    # Selling stock: Receive cash
-                    cash_impact = (price * abs(quantity)) - transaction_costs
-
-            # Check for sufficient cash if buying
-            if quantity > 0 and (-cash_impact) > self.cash:
-                self.logger.get_logger().warning(
-                    f"Insufficient cash for {instrument.ticker}: "
-                    f"need ${-cash_impact:,.2f}, have ${self.cash:,.2f}"
-                )
-                return False
-
-            # Update cash
-            self.cash += cash_impact
-
-            # Record the opening cash flow
-            if cash_impact > 0:
-                self.opening_cash_flows.append(cash_impact)
-
-            # Update or create the position
-            if ticker in self.positions:
-                existing_position = self.positions[ticker]
-                # Calculate new average entry price
-                total_value = (existing_position.entry_price * existing_position.quantity) + (price * quantity)
-                new_quantity = existing_position.quantity + quantity
-                new_price = total_value / new_quantity if new_quantity != 0 else price
-
-                # Update the position
-                self.positions[ticker] = Position(
-                    instrument=instrument,
-                    quantity=new_quantity,
-                    entry_price=new_price,
-                    entry_date=existing_position.entry_date,  # Keep original entry date
-                    entry_transaction_costs=existing_position.entry_transaction_costs + transaction_costs,
-                    assignment=existing_position.assignment or is_assignment
-                )
+                    # Selling an option: Receive premium
+                    cash_impact = (price * abs(quantity) * multiplier) - transaction_costs
+        else:
+            if quantity > 0:
+                # Buying stock: Pay for stocks
+                cash_impact = -(price * quantity) - transaction_costs
             else:
-                # Create new position
-                self.positions[ticker] = Position(
-                    instrument=instrument,
-                    quantity=quantity,
-                    entry_price=price,
-                    entry_date=timestamp,
-                    entry_transaction_costs=transaction_costs,
-                    assignment=is_assignment
-                )
+                # Selling stock: Receive cash
+                cash_impact = (price * abs(quantity)) - transaction_costs
 
-            # Log the transaction
-            self.logger.position_open(
-                timestamp=timestamp,
-                ticker=instrument.ticker,
-                quantity=quantity,  # Log the increment amount
-                price=price,
-                position_type='option' if instrument.is_option else 'stock',
-                capital=self.cash
+        # Check for sufficient cash if buying
+        if quantity > 0 and (-cash_impact) > self.cash:
+            self.logger.get_logger().warning(
+                f"Insufficient cash for {instrument.ticker}: "
+                f"need ${-cash_impact:,.2f}, have ${self.cash:,.2f}"
             )
-            self.logger.capital_update(
-                timestamp,
-                self.cash,
-                self.get_position_value(),
-                self.get_total_value()
+            return False
+
+        # Update cash
+        self.cash += cash_impact
+
+        # Record the opening cash flow
+        if cash_impact > 0:
+            self.opening_cash_flows.append(cash_impact)
+
+        # Update or create the position
+        if ticker in self.positions:
+            existing_position = self.positions[ticker]
+            # Calculate new average entry price
+            total_value = (existing_position.entry_price * existing_position.quantity) + (price * quantity)
+            new_quantity = existing_position.quantity + quantity
+            new_price = total_value / new_quantity if new_quantity != 0 else price
+
+            # Update the position
+            self.positions[ticker] = Position(
+                instrument=instrument,
+                quantity=new_quantity,
+                entry_price=new_price,
+                entry_date=existing_position.entry_date,  # Keep original entry date
+                entry_transaction_costs=existing_position.entry_transaction_costs + transaction_costs,
+                assignment=existing_position.assignment or is_assignment,
+                exercised=existing_position.exercised or is_exercise
+            )
+        else:
+            # Create new position
+            self.positions[ticker] = Position(
+                instrument=instrument,
+                quantity=quantity,
+                entry_price=price,
+                entry_date=timestamp,
+                entry_transaction_costs=transaction_costs,
+                assignment=is_assignment,
+                exercised=is_exercise
             )
 
-            self.log_position_status()
+        # Log the transaction
+        self.logger.position_open(
+            timestamp=timestamp,
+            ticker=instrument.ticker,
+            quantity=quantity,  # Log the increment amount
+            price=price,
+            position_type='option' if instrument.is_option else 'stock',
+            capital=self.cash
+        )
+        self.logger.capital_update(
+            timestamp,
+            self.cash,
+            self.get_position_value(),
+            self.get_total_value()
+        )
 
-            return True
+        self.log_position_status()
+
+        return True
 
     def close_position(
         self,
@@ -220,8 +217,8 @@ class Portfolio:
             return False
 
         entry_price = position.entry_price
-        pnl = 0.0  # Initialize pnl here
-        cash_impact = 0.0  # Initialize cash_impact here
+        pnl = 0.0
+        cash_impact = 0.0
 
         # Calculate P&L for the specified quantity
         if instrument.is_option:
@@ -257,8 +254,6 @@ class Portfolio:
         # Always calculate realized PnL regardless of skip_cash_impact
         realized_pnl = pnl - total_transaction_costs
 
-        print("Realized PnL: ", realized_pnl, "PnL: ", pnl, "Direction: ", position_quantity, "Quantity: ", quantity)
-
         # Create Trade object for the closed quantity
         closing_trade = Trade(
             instrument=instrument,
@@ -270,7 +265,7 @@ class Portfolio:
             transaction_costs=total_transaction_costs,  # Now includes proportional entry costs
             realized_pnl=realized_pnl,
             assignment=is_assignment or position.assignment,
-            exercised=is_exercise
+            exercised=is_exercise or position.exercised
         )
         self.trades.append(closing_trade)
 
@@ -344,14 +339,14 @@ class Portfolio:
     def handle_assignment(
         self,
         option: Instrument,
+        market_data: Dict[str, Any],
         strike_price: float,
         timestamp: datetime,
-        is_call: bool
+        is_call: bool,
+        broker: Broker
     ) -> bool:
         """
         Handle the assignment of a short option position.
-        For short calls: Sell underlying stock at strike price.
-        For short puts: Buy underlying stock at strike price.
         """
         ticker = option.format_option_ticker()
         underlying_ticker = option.underlying_ticker
@@ -368,7 +363,14 @@ class Portfolio:
                 price=strike_price,
                 timestamp=timestamp,
                 quantity=-share_quantity,
-                transaction_costs=0.0, # Adjust as needed
+                # TODO: we could pass market data here to use broker.calculate_execution_details
+                # which would run this with price impact, slippage, etc
+                transaction_costs=broker.calculate_execution_details(
+                    underlying_ticker,
+                    strike_price,
+                    share_quantity,
+                    market_data[underlying_ticker],
+                    'stock').total_transaction_costs,
                 is_assignment=True,
                 realized_pnl=0
             )
@@ -382,7 +384,12 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=0.0,  # Adjust as needed
+                transaction_costs=broker.calculate_execution_details(
+                    underlying_ticker,
+                    strike_price,
+                    share_quantity,
+                    market_data[underlying_ticker],
+                    'stock').total_transaction_costs,
                 is_assignment=True
             )
 
@@ -391,7 +398,13 @@ class Portfolio:
             instrument=option,
             price=0.0,  # Option is assigned/exercised; no residual value
             timestamp=timestamp,
-            transaction_costs=0.0
+            transaction_costs=broker.calculate_execution_details(
+                ticker,
+                0.01,
+                contract_quantity,
+                market_data[ticker],
+                'option').total_transaction_costs,
+            is_assignment=True
         ):
             self.logger.get_logger().info(f"Option {ticker} position closed due to assignment.")
             if ticker in self.positions:
@@ -405,14 +418,15 @@ class Portfolio:
     def handle_exercise(
         self,
         option: Instrument,
+        market_data: Dict[str, Any],
         strike_price: float,
         timestamp: datetime,
-        is_call: bool
+        is_call: bool,
+        intrinsic_value: float,
+        broker: Broker,
     ) -> bool:
         """
         Handle the exercise of a long option position.
-        For long calls: Buy underlying stock at strike price.
-        For long puts: Sell underlying stock at strike price.
         """
         ticker = option.format_option_ticker()
         underlying_ticker = option.underlying_ticker
@@ -429,8 +443,13 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=0.0,  # Adjust as needed
-                is_assignment=True
+                transaction_costs=broker.calculate_execution_details(
+                    underlying_ticker,
+                    strike_price,
+                    share_quantity,
+                    market_data[underlying_ticker],
+                    'stock').total_transaction_costs,
+                is_exercise=True,
             )
         else:
             # Long Put Exercise: Sell underlying stock at strike price
@@ -442,15 +461,26 @@ class Portfolio:
                 price=strike_price,
                 timestamp=timestamp,
                 quantity=share_quantity,
-                transaction_costs=0.0
+                transaction_costs=broker.calculate_execution_details(
+                    underlying_ticker,
+                    strike_price,
+                    share_quantity,
+                    market_data[underlying_ticker],
+                    'stock').total_transaction_costs,
+                is_exercise=True,
             )
 
         # After exercise, close the option position
         if self.close_position(
             instrument=option,
-            price=0.0,  # Option is exercised; no residual value
+            price=intrinsic_value or 0.0,
             timestamp=timestamp,
-            transaction_costs=0.0,
+            transaction_costs=broker.calculate_execution_details(
+                ticker,
+                0.01,
+                contract_quantity,
+                market_data[ticker],
+                'option').total_transaction_costs,
             is_exercise=True
         ):
             self.logger.get_logger().info(f"Option {ticker} position closed due to exercise.")

@@ -1,11 +1,11 @@
-import unittest
 from datetime import datetime
+import unittest
 import pytz
 import sys
 import logging
+
 from ancilla.backtesting.portfolio import Portfolio
-from ancilla.backtesting.instruments import InstrumentType, Option, Stock
-from ancilla.models import Trade, Position
+from ancilla.models import Option, Stock, InstrumentType
 
 class TestBacktesting(unittest.TestCase):
     """

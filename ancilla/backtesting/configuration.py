@@ -53,6 +53,7 @@ class Broker:
         Consolidates all execution-related calculations into a single method.
         Returns all execution details to avoid recalculating values.
         """
+        print("CALC EXECUTION DETAILS", market_data, ticker)
         # Extract market data once
         volume = market_data.get('volume', 0)
         high = market_data.get('high', base_price)

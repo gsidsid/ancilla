@@ -155,7 +155,7 @@ def test_long_option_strategy():
         data_provider=data_provider,
         position_size=0.1,            # 10% of portfolio per position
         target_days_to_expiry=30,     # Target 30 DTE options
-        exit_dte_threshold=-1,         # Exit with 5 or fewer days left
+        exit_dte_threshold=5,         # Exit with 5 or fewer days left
         strike_flex_pct=0.02          # Allow ±2% flexibility in strike selection
     )
 
