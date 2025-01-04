@@ -1,13 +1,13 @@
 from datetime import datetime
-import pytz
-from typing import Dict, Any
-from ancilla.backtesting.strategy import Strategy
-from ancilla.backtesting.instruments import Stock
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
-from ancilla.backtesting.engine import BacktestEngine
-from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
-import os
+from typing import Dict, Optional, Any
 import dotenv
+import pytz
+import os
+
+from ancilla.models import Stock, Option
+from ancilla.backtesting.configuration import CommissionConfig, SlippageConfig
+from ancilla.backtesting import Backtest, Strategy
+from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
@@ -38,7 +38,7 @@ class OptionExpirationTestStrategy(Strategy):
     def _has_pending_expiration(self, timestamp: datetime) -> bool:
         """Check if we have any positions expiring today."""
         for position in self.portfolio.positions.values():
-            if (position.instrument.is_option and
+            if (isinstance(position.instrument, Option) and
                 position.instrument.expiration.date() == timestamp.date()):
                 return True
         return False
@@ -199,7 +199,7 @@ def test_option_expiration():
     initial_capital = 100000
 
     # Initialize backtest engine
-    engine = BacktestEngine(
+    option_expiry_backtest = Backtest(
         data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
@@ -221,11 +221,10 @@ def test_option_expiration():
     )
 
     # Run backtest
-    results = engine.run()
+    results = option_expiry_backtest.run()
 
     # Plot results
-    fig = results.plot_equity_curve(include_drawdown=True)
-    fig.show()
+    results.plot(include_drawdown=True)
 
     return results
 

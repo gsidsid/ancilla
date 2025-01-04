@@ -1,12 +1,13 @@
 from datetime import datetime
 import pytz
-from typing import Dict, Any
+from typing import Dict, Optional, Any
 import os
 import dotenv
-from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
-from ancilla.backtesting.engine import BacktestEngine
-from ancilla.backtesting.strategy import Strategy
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
+
+from ancilla.models import Option
+from ancilla.backtesting.configuration import CommissionConfig, SlippageConfig
+from ancilla.backtesting import Backtest, Strategy
+from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
@@ -83,7 +84,7 @@ class MetaLongCallStrategy(Strategy):
             return
 
         # Select the call closest to ATM
-        selected_call = min(
+        selected_call: Optional[Option] = min(
             valid_calls,
             key=lambda x: abs(x.strike - current_price)
         )
@@ -106,6 +107,9 @@ class MetaLongCallStrategy(Strategy):
 
     def _manage_existing_position(self, current_price: float, timestamp: datetime) -> None:
         """Manage existing option position, exit if close to expiration."""
+        if not self.active_option:
+            return
+
         if timestamp > self.active_option.expiration:
             self.logger.info("Option expired")
             self.active_option = None
@@ -160,7 +164,7 @@ def run_meta_backtest():
     initial_capital = 100000
 
     # Initialize backtest engine
-    engine = BacktestEngine(
+    engine = Backtest(
         data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
@@ -185,8 +189,7 @@ def run_meta_backtest():
     results = engine.run()
 
     # Plot results
-    fig = results.plot_equity_curve(include_drawdown=True)
-    fig.show()
+    results.plot(include_drawdown=True)
 
     return results
 

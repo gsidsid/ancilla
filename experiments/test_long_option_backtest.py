@@ -3,10 +3,10 @@ import pytz
 from typing import Dict, Any
 import os
 import dotenv
-from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
-from ancilla.backtesting.engine import BacktestEngine
-from ancilla.backtesting.strategy import Strategy
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
+
+from ancilla.backtesting.configuration import CommissionConfig, SlippageConfig
+from ancilla.backtesting import Backtest, Strategy
+from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
@@ -166,7 +166,7 @@ def test_long_option_strategy():
     initial_capital = 100000
 
     # Initialize backtest engine
-    engine = BacktestEngine(
+    long_option_backtest = Backtest(
         data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
@@ -188,13 +188,11 @@ def test_long_option_strategy():
     )
 
     # Run backtest
-    results = engine.run()
+    results = long_option_backtest.run()
 
     # Plot results
-    fig = results.plot_equity_curve(include_drawdown=True)
-    fig.show()
+    results.plot(include_drawdown=True)
 
-    return results
 
 if __name__ == "__main__":
     results = test_long_option_strategy()

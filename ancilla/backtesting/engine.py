@@ -1,29 +1,29 @@
 # ancilla/backtesting/engine.py
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any
+from typing import List, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import pytz
 import logging
 
 from ancilla.utils.logging import BacktesterLogger
-from ancilla.models import Trade
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
-from ancilla.backtesting.instruments import Instrument, Option, Stock, InstrumentType
-from ancilla.backtesting.results import BacktestResults
-from ancilla.backtesting.strategy import Strategy
-from ancilla.backtesting.portfolio import Portfolio
-from ancilla.backtesting.simulation import (
+from ancilla.providers.polygon import PolygonDataProvider
+from ancilla.models import Instrument, Option, Stock, InstrumentType
+from ancilla.backtesting.configuration import (
     Broker, CommissionConfig, SlippageConfig
 )
 
-class BacktestEngine:
+if TYPE_CHECKING:
+    from ancilla.backtesting import Strategy, Portfolio, BacktestResults
+
+
+class Backtest:
     """Main backtesting engine with realistic broker simulation."""
 
     def __init__(
         self,
         data_provider: PolygonDataProvider,
-        strategy: Strategy,
+        strategy: "Strategy",
         initial_capital: float,
         start_date: datetime,
         end_date: datetime,
@@ -33,6 +33,8 @@ class BacktestEngine:
         name: str = "backtesting",
         market_data = {}
     ):
+        from ancilla.backtesting import Portfolio
+
         self.initial_capital = initial_capital
         self.data_provider = data_provider
         self.strategy = strategy
@@ -349,7 +351,7 @@ class BacktestEngine:
             self.logger.error(f"Error validating option order {option.ticker}: {str(e)}")
             return False
 
-    def run(self) -> BacktestResults:
+    def run(self) -> "BacktestResults":
         """Run the backtest with hourly resolution using weekly batched data requests."""
         current_date = self.start_date
         consecutive_no_data = 0
@@ -527,8 +529,9 @@ class BacktestEngine:
         self._close_all_positions(final_date)
 
         # Calculate and return results
+        from ancilla.backtesting.results import BacktestResults
         results = BacktestResults.calculate(self)
-        self.logger.info(results.summarize())
+        self.logger.info(results.summary())
         return results
 
     def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):

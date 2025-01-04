@@ -9,7 +9,7 @@ from ancilla.models import Trade, Position
 
 class TestBacktesting(unittest.TestCase):
     """
-    Test suite for portfolio backtesting functionality.
+    Test suite for portfolio functionality during backtesting.
     """
     def setUp(self):
         # Set up logging with method name
@@ -1501,7 +1501,7 @@ class TestBacktesting(unittest.TestCase):
     #               TRADE OPENING & CLOSING
     ############################################################
 
-    def test_position_additions_and_closures(self):
+    def test_long_position_additions_and_closures(self):
         self.logger.info("=== Starting Position Additions and Closures Test ===")
 
         # Initialize portfolio

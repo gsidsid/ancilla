@@ -2,12 +2,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from ancilla.backtesting.instruments import Instrument
+from ancilla.models import Instrument
 
 @dataclass
 class Trade:
     """Represents a completed trade."""
-    instrument: Instrument
+    instrument: "Instrument"
     entry_time: datetime
     exit_time: datetime
     entry_price: float

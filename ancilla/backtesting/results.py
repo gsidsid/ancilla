@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
 import pandas as pd
 import numpy as np
-from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
-from ancilla.backtesting.instruments import InstrumentType
+from ancilla.models import InstrumentType
 from ancilla.formulae.metrics import (
     calculate_return_metrics, calculate_drawdown_metrics, calculate_risk_metrics,
     calculate_trade_metrics
@@ -102,161 +102,162 @@ class BacktestResults:
 
         return equity_df
 
+    def plot(self, include_drawdown: bool = False) -> go.Figure:
+        """
+        Plot equity curve with optional drawdown overlay, trade annotations,
+        and performance summary panel.
+        """
+        # Create figure with two subplots side by side
+        fig = make_subplots(
+            rows=1, cols=2,
+            column_widths=[0.8, 0.13],
+            specs=[[{"secondary_y": include_drawdown}, {"type": "table"}]],
+            horizontal_spacing=0.06,
+        )
 
-    def plot_equity_curve(self, include_drawdown: bool = False) -> go.Figure:
-            """
-            Plot equity curve with optional drawdown overlay, trade annotations,
-            and performance summary panel.
-            """
-            # Create figure with two subplots side by side
-            fig = make_subplots(
-                rows=1, cols=2,
-                column_widths=[0.8, 0.13],
-                specs=[[{"secondary_y": include_drawdown}, {"type": "table"}]],
-                horizontal_spacing=0.06,
-            )
+        # Prepare equity curve data
+        equity_df = self.prepare_sequential_data()
 
-            # Prepare equity curve data
-            equity_df = self.prepare_sequential_data()
+        # Prepare drawdown data
+        drawdown_df = self._prepare_drawdown_data() if include_drawdown else None
 
-            # Prepare drawdown data
-            drawdown_df = self._prepare_drawdown_data() if include_drawdown else None
+        # Add equity curve
+        fig.add_trace(
+            go.Scatter(
+                x=equity_df['sequential_index'],
+                y=equity_df['equity'],
+                name='Portfolio Value',
+                line=dict(color='#FF9900', width=2),
+                mode='lines',
+                hoverinfo='text',
+                hovertext=self._generate_hover_text(equity_df['datetime'])
+            ),
+            row=1, col=1,
+            secondary_y=False,
+        )
 
-            # Add equity curve
+        # Add drawdown if requested
+        if include_drawdown and drawdown_df is not None and not drawdown_df.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=equity_df['sequential_index'],
-                    y=equity_df['equity'],
-                    name='Portfolio Value',
-                    line=dict(color='#FF9900', width=2),
+                    x=drawdown_df['sequential_index'],
+                    y=drawdown_df['drawdown'] * 100,
+                    name='Drawdown %',
+                    line=dict(color='#FF4444', width=1, dash='dot'),
                     mode='lines',
                     hoverinfo='text',
-                    hovertext=self._generate_hover_text(equity_df['datetime'])
+                    hovertext=[
+                        f"Time: {dt.strftime('%Y-%m-%d %H:%M')}<br>Drawdown: {dd * 100:.2f}%"
+                        for dt, dd in zip(drawdown_df['datetime'], drawdown_df['drawdown'])
+                    ]
                 ),
                 row=1, col=1,
-                secondary_y=False,
+                secondary_y=True,
             )
 
-            # Add drawdown if requested
-            if include_drawdown and drawdown_df is not None and not drawdown_df.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=drawdown_df['sequential_index'],
-                        y=drawdown_df['drawdown'] * 100,
-                        name='Drawdown %',
-                        line=dict(color='#FF4444', width=1, dash='dot'),
-                        mode='lines',
-                        hoverinfo='text',
-                        hovertext=[
-                            f"Time: {dt.strftime('%Y-%m-%d %H:%M')}<br>Drawdown: {dd * 100:.2f}%"
-                            for dt, dd in zip(drawdown_df['datetime'], drawdown_df['drawdown'])
-                        ]
-                    ),
-                    row=1, col=1,
-                    secondary_y=True,
-                )
+        # Add trade traces
+        trade_traces = self._create_trade_traces()
+        legend_entries = set()
+        for trade_trace in trade_traces:
+            # Check if this type of trade is already in legend
+            trade_name = trade_trace.name
+            if trade_name in legend_entries:
+                trade_trace.showlegend = False
+            else:
+                legend_entries.add(trade_name)
+            fig.add_trace(trade_trace, row=1, col=1, secondary_y=False)
 
-            # Add trade traces
-            trade_traces = self._create_trade_traces()
-            legend_entries = set()
-            for trade_trace in trade_traces:
-                # Check if this type of trade is already in legend
-                trade_name = trade_trace.name
-                if trade_name in legend_entries:
-                    trade_trace.showlegend = False
-                else:
-                    legend_entries.add(trade_name)
-                fig.add_trace(trade_trace, row=1, col=1, secondary_y=False)
-
-            # Add performance summary table
-            summary_data = self._prepare_summary_data()
-            fig.add_trace(
-                go.Table(
-                    header=dict(
-                        values=['Metric', 'Value'],
-                        fill_color='rgb(30, 30, 30)',
-                        align='left',
-                        font=dict(family="Arial", color='white', size=11)
-                    ),
-                    cells=dict(
-                        values=list(zip(*summary_data)),
-                        fill_color='rgb(10, 10, 10)',
-                        align=['left', 'right'],
-                        line_color='rgb(30, 30, 30)',
-                        font=dict(family="Arial", color='white', size=10),
-                        height=25
-                    ),
+        # Add performance summary table
+        summary_data = self._prepare_summary_data()
+        fig.add_trace(
+            go.Table(
+                header=dict(
+                    values=['Metric', 'Value'],
+                    fill_color='rgb(30, 30, 30)',
+                    align='left',
+                    font=dict(family="Arial", color='white', size=11)
                 ),
-                row=1, col=2,
-
-            )
-
-            # Update layout
-            fig.update_layout(
-                plot_bgcolor='black',
-                paper_bgcolor='black',
-                title={
-                    'text': self.strategy_name,
-                    'y': 0.95,
-                    'x': 0.4,
-                    'xanchor': 'center',
-                    'yanchor': 'top',
-                    'font': dict(family="Arial", size=16, color='white')
-                },
-                showlegend=True,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.010,
-                    xanchor="right",
-                    x=0.75,
-                    font=dict(family="Arial", size=10, color='white'),
-                    bgcolor='rgba(0,0,0,0.5)'
+                cells=dict(
+                    values=list(zip(*summary_data)),
+                    fill_color='rgb(10, 10, 10)',
+                    align=['left', 'right'],
+                    line_color='rgb(30, 30, 30)',
+                    font=dict(family="Arial", color='white', size=10),
+                    height=25
                 ),
-                hovermode='x unified',
-                margin=dict(l=100, r=0, t=80, b=100)
-            )
+            ),
+            row=1, col=2,
 
-            # Update axes for equity curve
-            fig.update_xaxes(
-                row=1, col=1,
-                showgrid=True,
-                gridcolor='#333333',
-                gridwidth=1,
-                griddash='dot',
-                dtick=len(equity_df) // 20,  # Increased grid density
-                tickfont=dict(size=10, color='gray'),
-                tickangle=45,
-                title_font=dict(size=11, color='gray'),
-                title_text="Date"
-            )
+        )
 
+        # Update layout
+        fig.update_layout(
+            plot_bgcolor='black',
+            paper_bgcolor='black',
+            title={
+                'text': self.strategy_name,
+                'y': 0.95,
+                'x': 0.4,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(family="Arial", size=16, color='white')
+            },
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.010,
+                xanchor="right",
+                x=0.75,
+                font=dict(family="Arial", size=10, color='white'),
+                bgcolor='rgba(0,0,0,0.5)'
+            ),
+            hovermode='x unified',
+            margin=dict(l=100, r=0, t=80, b=100)
+        )
+
+        # Update axes for equity curve
+        fig.update_xaxes(
+            row=1, col=1,
+            showgrid=True,
+            gridcolor='#333333',
+            gridwidth=1,
+            griddash='dot',
+            dtick=len(equity_df) // 20,  # Increased grid density
+            tickfont=dict(size=10, color='gray'),
+            tickangle=45,
+            title_font=dict(size=11, color='gray'),
+            title_text="Date"
+        )
+
+        fig.update_yaxes(
+            row=1, col=1,
+            secondary_y=False,
+            showgrid=True,
+            gridcolor='#333333',
+            gridwidth=1,
+            griddash='dot',
+            dtick=self.final_capital / 20,  # Increased grid density
+            tickfont=dict(family="Arial", size=10, color='gray'),
+            title_font=dict(family="Arial", size=11, color='gray'),
+            tickformat="$,.0f"
+        )
+
+        if include_drawdown:
             fig.update_yaxes(
                 row=1, col=1,
-                secondary_y=False,
-                showgrid=True,
+                secondary_y=True,
+                showgrid=False,
                 gridcolor='#333333',
-                gridwidth=1,
-                griddash='dot',
-                dtick=self.final_capital / 20,  # Increased grid density
-                tickfont=dict(family="Arial", size=10, color='gray'),
-                title_font=dict(family="Arial", size=11, color='gray'),
-                tickformat="$,.0f"
+                range=[drawdown_df['drawdown'].min() * 100 * 1.1, 0],
+                tickfont=dict(size=10, color='gray'),
+                title_font=dict(size=11, color='gray'),
+                tickformat=".1%"
             )
 
-            if include_drawdown:
-                fig.update_yaxes(
-                    row=1, col=1,
-                    secondary_y=True,
-                    showgrid=False,
-                    gridcolor='#333333',
-                    range=[drawdown_df['drawdown'].min() * 100 * 1.1, 0],
-                    tickfont=dict(size=10, color='gray'),
-                    title_font=dict(size=11, color='gray'),
-                    tickformat=".1%"
-                )
+        fig.show()
 
-            return fig
+        return fig
 
     def _prepare_drawdown_data(self) -> Optional[pd.DataFrame]:
         """Prepare drawdown data for plotting."""
@@ -552,8 +553,6 @@ class BacktestResults:
 
         return pd.DataFrame(trades_data)
 
-    from datetime import datetime, timezone
-
     def _extract_dte(self, entry_date: datetime, ticker: str) -> int:
         """Extract days to expiration at entry from option ticker.
 
@@ -618,7 +617,7 @@ class BacktestResults:
 
         return metrics
 
-    def summarize(self, summarize_trades: bool = True) -> str:
+    def summary(self, summarize_trades: bool = True) -> str:
         """Generate a comprehensive performance summary."""
         risk_metrics = self.risk_metrics()
 

@@ -1,6 +1,6 @@
 # ancilla/formulae/metrics.py
 from typing import Dict, Any, Sequence, Optional
-from ancilla.backtesting.instruments import InstrumentType
+from ancilla.models import InstrumentType
 import numpy as np
 import pandas as pd
 

@@ -5,10 +5,9 @@ from typing import Dict, Any
 import os
 import dotenv
 
-from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
-from ancilla.backtesting.engine import BacktestEngine
-from ancilla.backtesting.strategy import Strategy
+from ancilla.backtesting.configuration import CommissionConfig, SlippageConfig
+from ancilla.backtesting import Backtest, Strategy
+from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
@@ -73,7 +72,7 @@ def test_backtest():
     end_date = datetime(2024, 1, 31, tzinfo=pytz.UTC)  # Shorter test period
 
     # Initialize backtest engine
-    engine = BacktestEngine(
+    simple_backtest = Backtest(
         data_provider=data_provider,
         strategy=strategy,
         initial_capital=100000,
@@ -95,11 +94,10 @@ def test_backtest():
     )
 
     # Run backtest
-    results = engine.run()
+    results = simple_backtest.run()
 
     # Plot results
-    fig = results.plot_equity_curve(include_drawdown=True)
-    fig.show()
+    results.plot(include_drawdown=True)
 
     return results
 

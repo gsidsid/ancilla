@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 from typing import Dict
 
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
+from ancilla.providers.polygon import PolygonDataProvider
 from ancilla.models import MarketSnapshot, OptionData
 
 UTC = pytz.UTC
@@ -32,7 +32,7 @@ def provider(mock_client):
     Create a PolygonDataProvider instance with a mock client
     for unit tests.
     """
-    with patch("ancilla.providers.polygon_data_provider.RESTClient") as mock_rest:
+    with patch("ancilla.providers.polygon.RESTClient") as mock_rest:
         mock_rest.return_value = mock_client
         pdp = PolygonDataProvider(api_key="test-api-key")
         pdp.cache.clear()

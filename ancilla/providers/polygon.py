@@ -1,4 +1,4 @@
-# ancilla/providers/polygon_data_provider.py
+# ancilla/providers/polygon.py
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Union, Tuple, Callable, Any
@@ -12,8 +12,7 @@ import pytz
 import time
 
 # Local imports
-from ancilla.backtesting.instruments import Option
-from ancilla.models import OptionData, BarData, MarketSnapshot
+from ancilla.models import OptionData, BarData, MarketSnapshot, Option
 from ancilla.utils.caching import HybridCache
 from ancilla.utils.logging import MarketDataLogger
 
@@ -375,7 +374,7 @@ class PolygonDataProvider:
         strike_range: Tuple[float, float],
         max_expiration_days: int = 365,
         contract_type: Optional[str] = None,
-    ) -> Optional[List[Option]]:
+    ) -> Optional[List["Option"]]:
         """
         Get available option contracts for a ticker.
 

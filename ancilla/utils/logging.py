@@ -2,10 +2,11 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
 from contextlib import contextmanager
 
-from ancilla.models.option_data import OptionData
+if TYPE_CHECKING:
+    from ancilla.models import OptionData
 
 class BaseLogger:
     """Base logger class with common functionality"""
@@ -199,7 +200,7 @@ class BookLogger(BaseLogger):
             total_value=total_value
         ))
 
-    def option_data(self, timestamp: datetime, option: OptionData):
+    def option_data(self, timestamp: datetime, option: "OptionData"):
         """Log option contract details."""
         if self.logger is None:
             raise ValueError("Logger not initialized")

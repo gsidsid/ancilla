@@ -1,14 +1,13 @@
 # ancilla/backtesting/strategy.py
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 
 from ancilla.providers import PolygonDataProvider
 from ancilla.backtesting.portfolio import Portfolio
 from ancilla.utils.logging import StrategyLogger
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ancilla.backtesting.engine import BacktestEngine
+    from ancilla.backtesting.engine import Backtest
 
 class Strategy:
     """Base class for implementing trading strategies."""
@@ -17,9 +16,9 @@ class Strategy:
         self.name = name
         self.data_provider = data_provider
         self.portfolio: Portfolio;
-        self.engine: BacktestEngine;
+        self.engine: Backtest;
 
-    def initialize(self, portfolio: Portfolio, engine: "BacktestEngine") -> None:
+    def initialize(self, portfolio: Portfolio, engine: "Backtest") -> None:
         """Initialize the strategy with a portfolio."""
         self.portfolio = portfolio
         self.engine = engine

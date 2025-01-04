@@ -37,10 +37,7 @@ class Instrument:
     @property
     def is_option(self) -> bool:
         """Determine if the instrument is an option."""
-        return self.instrument_type in {
-            InstrumentType.CALL_OPTION,
-            InstrumentType.PUT_OPTION
-        }
+        return isinstance(self, Option)
 
 
 @dataclass

@@ -14,7 +14,7 @@ def main():
 
     # Define date range
     end_date = datetime(2024, 12, 1)
-    start_date = datetime(2024, 8, 1)
+    start_date = datetime(2024, 11, 1)
     symbol = "AAPL"
 
     print("Creating volatility surfaces...")

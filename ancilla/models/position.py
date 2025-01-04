@@ -1,12 +1,14 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict
-from ancilla.backtesting.instruments import Instrument
+from typing import Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ancilla.models import Instrument
 
 @dataclass
 class Position:
     """Represents an open position."""
-    instrument: Instrument
+    instrument: "Instrument"
     quantity: int
     entry_price: float
     entry_date: datetime

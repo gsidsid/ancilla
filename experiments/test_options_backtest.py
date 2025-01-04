@@ -4,11 +4,11 @@ import pytz
 from typing import Dict, Any, Tuple
 import os
 import dotenv
-from ancilla.backtesting.simulation import CommissionConfig, SlippageConfig
-from ancilla.providers.polygon_data_provider import PolygonDataProvider
-from ancilla.backtesting.engine import BacktestEngine
-from ancilla.backtesting.strategy import Strategy
-from ancilla.backtesting.instruments import Stock
+
+from ancilla.models import Stock
+from ancilla.backtesting.configuration import CommissionConfig, SlippageConfig
+from ancilla.backtesting import Backtest, Strategy
+from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
@@ -222,7 +222,7 @@ def test_covered_call_strategy():
     initial_capital = 100000
 
     # Initialize backtest engine
-    engine = BacktestEngine(
+    covered_call_backtest = Backtest(
         data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
@@ -244,11 +244,10 @@ def test_covered_call_strategy():
     )
 
     # Run backtest
-    results = engine.run()
+    results = covered_call_backtest.run()
 
     # Plot results
-    fig = results.plot_equity_curve(include_drawdown=True)
-    fig.show()
+    results.plot(include_drawdown=True)
 
     return results
 

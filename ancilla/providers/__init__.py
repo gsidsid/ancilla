@@ -1,3 +1,3 @@
-from .polygon_data_provider import PolygonDataProvider
+from .polygon import PolygonDataProvider
 
 __all__ = ['PolygonDataProvider']
