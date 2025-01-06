@@ -158,8 +158,8 @@ class Portfolio:
             quantity = position_quantity
 
         # Ensure the close quantity does not exceed the position quantity
-        if (position_quantity > 0 and quantity > position_quantity) or \
-            (position_quantity < 0 and quantity < position_quantity):
+        # TODO: This could theoretically imply opening a new position with the difference?
+        if abs(quantity) > abs(position_quantity):
             self.logger.get_logger().warning(
                 f"Attempting to close {quantity} of {ticker}, but only {position_quantity} is available."
             )
