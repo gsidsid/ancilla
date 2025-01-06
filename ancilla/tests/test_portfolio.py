@@ -1407,7 +1407,7 @@ class TestBacktesting(unittest.TestCase):
 
         # Initialize portfolio
         initial_capital = 100000
-        portfolio = Portfolio("short_option_no_underlying_portfolio", initial_capital)
+        portfolio = Portfolio("short_option_no_underlying_portfolio", initial_capital, enable_naked_options=False)
 
         # Create a naked short
         # Option without underlying stock
