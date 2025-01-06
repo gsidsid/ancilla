@@ -372,6 +372,7 @@ class PolygonDataProvider:
         ticker: str,
         as_of: datetime,
         strike_range: Tuple[float, float],
+        min_expiration_days: int = 0,
         max_expiration_days: int = 365,
         contract_type: Optional[str] = None,
     ) -> Optional[List["Option"]]:
@@ -393,6 +394,7 @@ class PolygonDataProvider:
                 'ticker': ticker,
                 'as_of': as_of.isoformat(),
                 'strike_range': strike_range,
+                'min_expiration_days': min_expiration_days,
                 'max_expiration_days': max_expiration_days,
                 'contract_type': contract_type
             }
@@ -406,6 +408,7 @@ class PolygonDataProvider:
             self.logger.debug(f"No cache found for {ticker}. Fetching options contracts from API.")
 
             # Calculate max expiration date
+            min_expiry = as_of + timedelta(days=min_expiration_days)
             max_expiry = as_of + timedelta(days=max_expiration_days)
 
             # Get options contracts from API
@@ -415,7 +418,7 @@ class PolygonDataProvider:
                 contract_type=contract_type,
                 strike_price_gte=strike_range[0],
                 strike_price_lte=strike_range[1],
-                expiration_date_gte=as_of.strftime('%Y-%m-%d'),
+                expiration_date_gte=min_expiry.strftime('%Y-%m-%d'),
                 expiration_date_lte=max_expiry.strftime('%Y-%m-%d'),
                 as_of=as_of.strftime('%Y-%m-%d')
             )

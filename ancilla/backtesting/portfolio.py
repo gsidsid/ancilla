@@ -1,6 +1,6 @@
 # ancilla/backtesting/portfolio.py
 from datetime import datetime
-from typing import Dict, Optional, List, Any, TYPE_CHECKING
+from typing import Dict, Optional, List, TYPE_CHECKING
 
 from ancilla.backtesting.configuration import Broker
 from ancilla.models import Trade, Position, Instrument, InstrumentType, Stock
@@ -79,9 +79,9 @@ class Portfolio:
                 or self.positions[instrument.underlying_ticker].quantity < required_shares):
                     self.logger.get_logger().warning(
                         f"Insufficient shares for covered call: need {required_shares}, "
-                        f"have {self.positions.get(instrument.underlying_ticker, Position(instrument, 0, 0, timestamp)).quantity}"
+                        f"have {self.positions.get(instrument.underlying_ticker, Position(instrument, 0, 0, timestamp)).quantity}. "
+                        f"May automatically liquidate position."
                     )
-                    return False
 
         multiplier = instrument.get_multiplier()
         ticker = instrument.ticker
@@ -339,7 +339,6 @@ class Portfolio:
     def handle_assignment(
         self,
         option: Instrument,
-        market_data: Dict[str, Any],
         strike_price: float,
         timestamp: datetime,
         is_call: bool,
@@ -363,14 +362,11 @@ class Portfolio:
                 price=strike_price,
                 timestamp=timestamp,
                 quantity=-share_quantity,
-                # TODO: we could pass market data here to use broker.calculate_execution_details
-                # which would run this with price impact, slippage, etc
-                transaction_costs=broker.calculate_execution_details(
-                    underlying_ticker,
+                transaction_costs=broker.calculate_commission(
                     strike_price,
                     share_quantity,
-                    market_data[underlying_ticker],
-                    'stock').total_transaction_costs,
+                    'stock'
+                ),
                 is_assignment=True,
                 realized_pnl=0
             )
@@ -384,12 +380,11 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=broker.calculate_execution_details(
-                    underlying_ticker,
+                transaction_costs=broker.calculate_commission(
                     strike_price,
                     share_quantity,
-                    market_data[underlying_ticker],
-                    'stock').total_transaction_costs,
+                    'stock'
+                ),
                 is_assignment=True
             )
 
@@ -398,12 +393,11 @@ class Portfolio:
             instrument=option,
             price=0.0,  # Option is assigned/exercised; no residual value
             timestamp=timestamp,
-            transaction_costs=broker.calculate_execution_details(
-                ticker,
-                0.01,
+            transaction_costs=broker.calculate_commission(
+                0.0,
                 contract_quantity,
-                market_data[ticker],
-                'option').total_transaction_costs,
+                'option'
+            ),
             is_assignment=True
         ):
             self.logger.get_logger().info(f"Option {ticker} position closed due to assignment.")
@@ -418,7 +412,6 @@ class Portfolio:
     def handle_exercise(
         self,
         option: Instrument,
-        market_data: Dict[str, Any],
         strike_price: float,
         timestamp: datetime,
         is_call: bool,
@@ -443,12 +436,11 @@ class Portfolio:
                 quantity=share_quantity,
                 price=strike_price,
                 timestamp=timestamp,
-                transaction_costs=broker.calculate_execution_details(
-                    underlying_ticker,
+                transaction_costs=broker.calculate_commission(
                     strike_price,
                     share_quantity,
-                    market_data[underlying_ticker],
-                    'stock').total_transaction_costs,
+                    'stock'
+                ),
                 is_exercise=True,
             )
         else:
@@ -461,12 +453,11 @@ class Portfolio:
                 price=strike_price,
                 timestamp=timestamp,
                 quantity=share_quantity,
-                transaction_costs=broker.calculate_execution_details(
-                    underlying_ticker,
+                transaction_costs=broker.calculate_commission(
                     strike_price,
                     share_quantity,
-                    market_data[underlying_ticker],
-                    'stock').total_transaction_costs,
+                    'stock'
+                ),
                 is_exercise=True,
             )
 
@@ -475,12 +466,11 @@ class Portfolio:
             instrument=option,
             price=intrinsic_value or 0.0,
             timestamp=timestamp,
-            transaction_costs=broker.calculate_execution_details(
-                ticker,
-                0.01,
+            transaction_costs=broker.calculate_commission(
+                intrinsic_value or 0.0,
                 contract_quantity,
-                market_data[ticker],
-                'option').total_transaction_costs,
+                'option'
+            ),
             is_exercise=True
         ):
             self.logger.get_logger().info(f"Option {ticker} position closed due to exercise.")

@@ -17,6 +17,8 @@ class Strategy:
         self.data_provider = data_provider
         self.portfolio: Portfolio;
         self.engine: Backtest;
+        self.time: datetime;
+        self.market_data: Dict[str, Any];
 
     def initialize(self, portfolio: Portfolio, engine: "Backtest") -> None:
         """Initialize the strategy with a portfolio."""

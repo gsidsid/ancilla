@@ -1,6 +1,6 @@
 # ancilla/backtesting/results.py
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Union, Any, Optional
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -60,47 +60,54 @@ class BacktestResults:
         wins = sum(1 for t in self.trades if t.pnl > 0)
         return wins / len(self.trades)
 
+    def prepare_timeseries_data(self, data: Union[pd.DataFrame, pd.Series], value_column: str) -> pd.DataFrame:
+        """
+        Prepare timeseries data for plotting by standardizing format and timezone.
 
-    def prepare_sequential_data(self):
+        Args:
+            data: Input DataFrame or Series containing the timeseries data
+            value_column: Name of the column to use for values if data is a Series
+
+        Returns:
+            Processed DataFrame with standardized datetime index and sequential index,
+            or None if data is empty or invalid
         """
-        Prepare the equity data by resetting the index and creating a sequential index.
-        Ensures that there is a 'datetime' column regardless of the original index name.
-        Converts datetime from UTC to US/Eastern timezone.
-        """
-        # Ensure equity_curve is a DataFrame with an 'equity' column
-        if isinstance(self.equity_curve, pd.Series):
-            equity_df = self.equity_curve.to_frame(name='equity')
-        elif isinstance(self.equity_curve, pd.DataFrame):
-            if 'equity' not in self.equity_curve.columns:
-                raise ValueError("The equity_curve DataFrame must contain an 'equity' column.")
-            equity_df = self.equity_curve.copy()
+        # Handle empty or invalid input
+        if data is None or (isinstance(data, pd.DataFrame) and data.empty):
+            raise TypeError("Data must exist")
+
+        # Convert Series to DataFrame if necessary
+        if isinstance(data, pd.Series):
+            df = data.to_frame(name=value_column)
+        elif isinstance(data, pd.DataFrame):
+            if value_column not in data.columns:
+                raise TypeError(f"{value_column} not found in data")
+            df = data.copy()
         else:
-            raise TypeError("equity_curve must be a pandas DataFrame or Series.")
+            raise TypeError("data must be a pandas DataFrame or Series")
 
         # Reset index to turn the datetime index into a column
-        equity_df = equity_df.reset_index(drop=False)
+        df = df.reset_index(drop=False)
 
-        # Determine the name of the datetime column after reset
-        datetime_col = equity_df.columns[0]  # Assumes the first column is datetime after reset
-
-        # Rename the datetime column to 'datetime' for consistency
+        # Standardize datetime column name
+        datetime_col = df.columns[0]  # Assumes first column is datetime after reset
         if datetime_col != 'datetime':
-            equity_df = equity_df.rename(columns={datetime_col: 'datetime'})
+            df = df.rename(columns={datetime_col: 'datetime'})
 
-        # Convert 'datetime' to datetime type if not already
-        if not pd.api.types.is_datetime64_any_dtype(equity_df['datetime']):
-            equity_df['datetime'] = pd.to_datetime(equity_df['datetime'])
+        # Convert to datetime type if needed
+        if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
+            df['datetime'] = pd.to_datetime(df['datetime'])
 
-        # Localize to UTC if not timezone-aware, then convert to US/Eastern
-        if equity_df['datetime'].dt.tz is None:
-            equity_df['datetime'] = equity_df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+        # Handle timezone conversion
+        if df['datetime'].dt.tz is None:
+            df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
         else:
-            equity_df['datetime'] = equity_df['datetime'].dt.tz_convert('US/Eastern')
+            df['datetime'] = df['datetime'].dt.tz_convert('US/Eastern')
 
-        # Create a sequential integer index
-        equity_df['sequential_index'] = equity_df.index
+        # Add sequential index
+        df['sequential_index'] = df.index
 
-        return equity_df
+        return df
 
     def plot(self, include_drawdown: bool = False) -> go.Figure:
         """
@@ -115,11 +122,11 @@ class BacktestResults:
             horizontal_spacing=0.06,
         )
 
-        # Prepare equity curve data
-        equity_df = self.prepare_sequential_data()
+        # For equity data
+        equity_df = self.prepare_timeseries_data(self.equity_curve, 'equity')
 
-        # Prepare drawdown data
-        drawdown_df = self._prepare_drawdown_data() if include_drawdown else None
+        # For drawdown data
+        drawdown_df = self.prepare_timeseries_data(self.drawdown_series, 'drawdown') if include_drawdown else None
 
         # Add equity curve
         fig.add_trace(
@@ -259,40 +266,12 @@ class BacktestResults:
 
         return fig
 
-    def _prepare_drawdown_data(self) -> Optional[pd.DataFrame]:
-        """Prepare drawdown data for plotting."""
-        if not hasattr(self, 'drawdown_series') or self.drawdown_series.empty:
-            return None
-
-        if isinstance(self.drawdown_series, pd.Series):
-            drawdown_df = self.drawdown_series.to_frame(name='drawdown')
-        else:
-            if 'drawdown' not in self.drawdown_series.columns:
-                return None
-            drawdown_df = self.drawdown_series.copy()
-
-        drawdown_df = drawdown_df.reset_index(drop=False)
-        datetime_col = drawdown_df.columns[0]
-        if datetime_col != 'datetime':
-            drawdown_df = drawdown_df.rename(columns={datetime_col: 'datetime'})
-
-        # Handle timezone conversion
-        if not pd.api.types.is_datetime64_any_dtype(drawdown_df['datetime']):
-            drawdown_df['datetime'] = pd.to_datetime(drawdown_df['datetime'])
-        if drawdown_df['datetime'].dt.tz is None:
-            drawdown_df['datetime'] = drawdown_df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
-        else:
-            drawdown_df['datetime'] = drawdown_df['datetime'].dt.tz_convert('US/Eastern')
-
-        drawdown_df['sequential_index'] = drawdown_df.index
-        return drawdown_df
-
     def _create_trade_traces(self) -> List[go.Scatter]:
         """
         Create Plotly scatter traces for trades with enhanced styling.
         """
         trade_traces = []
-        equity_df = self.prepare_sequential_data()
+        equity_df = self.prepare_timeseries_data(self.equity_curve, 'equity')
         datetime_to_seq = dict(zip(equity_df['datetime'], equity_df['sequential_index']))
 
         for trade in self.trades:
@@ -308,11 +287,11 @@ class BacktestResults:
             if trade.instrument.is_option:
                 color = '#00FF00' if action == 'Buy' else '#FF4444'  # Bright green/red for options
                 symbol = 'diamond' if action == 'Buy' else 'diamond-cross'
-                size = 12
+                size = 10
             else:
                 color = '#90EE90' if action == 'Buy' else '#FF6B6B'  # Softer green/red for stocks
                 symbol = 'triangle-up' if action == 'Buy' else 'triangle-down'
-                size = 10
+                size = 11
 
             trade_traces.append(
                 go.Scatter(
@@ -426,16 +405,12 @@ class BacktestResults:
         Generate hover text for individual trades.
         """
         trade_info = (
-            f"Trade Type: {'Option' if trade.instrument.is_option else 'Stock'}<br>"
-            f"Action: {'Buy' if trade.quantity > 0 else 'Sell'}<br>"
-            f"Ticker: {trade.instrument.ticker}<br>"
-            f"Quantity: {abs(trade.quantity)}<br>"
-            f"Price: ${trade.entry_price:,.2f}<br>"
+            f"{abs(trade.quantity)} {trade.instrument.ticker} {str(trade.instrument.instrument_type).split('_')[0] + '(s)' if trade.instrument.is_option else 'share(s)'} @ ${trade.entry_price:,.2f}<br>"
             f"P&L: ${trade.pnl:,.2f}"
         )
         if trade.instrument.is_option:
             trade_info += f"<br>Strike: ${trade.instrument.strike:,.2f}<br>"
-            trade_info += f"Expiration: {trade.instrument.expiration.strftime('%Y-%m-%d')}"
+            trade_info += f"Expires {trade.instrument.expiration.strftime('%Y-%m-%d')}"
         return trade_info
 
     def _generate_hover_text(self, dates: pd.DatetimeIndex) -> List[str]:
