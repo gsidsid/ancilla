@@ -5,6 +5,7 @@ from typing import Dict, Any, TYPE_CHECKING
 from ancilla.providers import PolygonDataProvider
 from ancilla.backtesting.portfolio import Portfolio
 from ancilla.utils.logging import StrategyLogger
+from ancilla.models import MarketData
 
 if TYPE_CHECKING:
     from ancilla.backtesting.engine import Backtest
@@ -27,7 +28,7 @@ class Strategy:
         self.logger = StrategyLogger(self.name).get_logger()
         self.logger.info("Starting strategy: %s", self.name)
 
-    def on_data(self, timestamp: datetime, market_data: Dict[str, Any]) -> None:
+    def on_data(self, timestamp: datetime, market_data: Dict[str, MarketData]) -> None:
         """
         Process market data and execute strategy logic.
 

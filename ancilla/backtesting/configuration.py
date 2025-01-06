@@ -96,7 +96,7 @@ class Broker:
         )
 
     def _scale_market_impact(self, quantity, avg_volume):
-        ratio = quantity / max(avg_volume, 1)
+        ratio = abs(quantity) / max(avg_volume, 1)
         # Continuous scaling factor based on square root law
         scale = 1 / (1 + (ratio ** 0.5))
         # Clamp scale factor

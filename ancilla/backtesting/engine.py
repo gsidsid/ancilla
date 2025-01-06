@@ -8,7 +8,7 @@ import logging
 
 from ancilla.utils.logging import BacktesterLogger
 from ancilla.providers.polygon import PolygonDataProvider
-from ancilla.models import Instrument, Option, Stock, InstrumentType
+from ancilla.models import Instrument, Option, Stock, InstrumentType, MarketData, MarketDataDict
 from ancilla.backtesting.configuration import (
     Broker, CommissionConfig, SlippageConfig
 )
@@ -64,10 +64,8 @@ class Backtest:
         # Initialize market simulator
         self.broker = Broker(commission_config, slippage_config, deterministic_fill)
 
-        # Cache for market data and analytics
-        self._market_data_cache = {}
-        self._volume_profile_cache = {}  # For intraday volume patterns
-        self._atr_cache = {}  # For volatility-based adjustments
+        # History for market data and analytics
+        self.market_history = {}
 
         # Trade analytics
         self.fill_ratios = []  # Track fill rates
@@ -256,6 +254,8 @@ class Backtest:
                         if window_bars.empty:
                             continue
                         self.market_data[ticker] = window_bars.iloc[0].to_dict()
+                        # add current time as timestamp to market data
+                        self.market_data[ticker]['timestamp'] = current_time
 
                     # Legible strategy progress display
                     eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
@@ -268,13 +268,23 @@ class Backtest:
                     print(current_line, end='\r')
 
                     # Execute backtest strategy
-                    self.strategy.on_data(current_time, self.market_data)
+                    market_data_with_indicators = MarketDataDict(
+                        self.market_data,
+                        self.market_history,
+                        risk_free_rate=0.05
+                    )
+                    self.strategy.on_data(current_time, market_data_with_indicators)
+                    for ticker in self.market_data:
+                        if ticker not in self.market_history:
+                            self.market_history[ticker] = []
+                        self.market_data[ticker]['timestamp'] = current_time
+                        self.market_history[ticker].append(self.market_data[ticker])
 
                     # Update portfolio equity curve prices as of strategy execution
                     current_prices = {}
                     for ticker, data in self.market_data.items():
-                        if 'open' in data:
-                            current_prices[ticker] = data['open']
+                        if 'close' in data:
+                            current_prices[ticker] = data['close']
                     self.portfolio.update_equity(current_time, current_prices)
 
                     current_time += frequency_delta
