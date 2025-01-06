@@ -332,7 +332,7 @@ class BacktestResults:
                 # Handle options
                 if trade.instrument.is_option:
                     # Skip if option is already expired
-                    if trade.instrument.expiration <= date:
+                    if trade.instrument.expiration <= date or trade.exit_time <= date:
                         trade_idx += 1
                         continue
 
@@ -593,6 +593,11 @@ class BacktestResults:
         options_trades = [t for t in self.trades if t.instrument.is_option]
         stock_trades = [t for t in self.trades if not t.instrument.is_option]
 
+        total_invested = sum([
+            t.quantity * t.entry_price * t.instrument.get_multiplier()
+            for t in self.trades if t.quantity > 0])
+        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested
+
         # Calculate options performance metrics
         if options_trades:
             calls = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.CALL_OPTION]
@@ -612,6 +617,7 @@ class BacktestResults:
             f"Net P&L: ${self.final_capital - self.initial_capital:,.2f}",
             f"Total Return: {(self.final_capital - self.initial_capital) / self.initial_capital:.2%}",
             f"Annualized Return: {self.annualized_return:.2%}",
+            f"ROI: {return_on_invested_capital:.2%}",
             "",
             "Risk Metrics:",
             f"Sharpe Ratio: {self.sharpe_ratio:.2f}",
@@ -751,7 +757,12 @@ class BacktestResults:
         """Prepare summary data for the performance panel."""
         risk_metrics = self.risk_metrics()
         options_trades = [t for t in self.trades if t.instrument.is_option]
-        stock_trades = [t for t in self.trades if not t.instrument.is_option]
+        option_pnls = [t.pnl for t in options_trades]
+
+        total_invested = sum([
+            t.quantity * t.entry_price * t.instrument.get_multiplier()
+            for t in self.trades if t.quantity > 0])
+        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested
 
         # Calculate options metrics if applicable
         options_metrics = {}
@@ -762,24 +773,24 @@ class BacktestResults:
             options_metrics.update({
                 'Calls/Puts': f"{len(calls)}/{len(puts)}",
                 'Option P&L': f"${sum(option_pnls):,.2f}",
-                'Option Win Rate': f"{len([p for p in option_pnls if p > 0])/len(option_pnls):.1%}"
+                'Option Win Rate': f"{len([p for p in option_pnls if p > 0])/len(option_pnls):.1%}",
+                'Assignment Rate': f"{len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.1%}",
+                'Avg Option Duration': f"{np.mean([t.duration_hours for t in options_trades]):.1f}h"
             })
 
         # Prepare summary data
         metrics = [
-            ['Performance', ''],  # Section header
             ['Final Capital', f"${self.final_capital:,.2f}"],
             ['Net P&L', f"${self.net_pnl:,.2f}"],
             ['Total Return', f"{self.net_pnl / self.initial_capital:.1%}"],
             ['Ann. Return', f"{self.annualized_return:.1%}"],
-            ['', ''],  # Spacing
-            ['Risk Metrics', ''],  # Section header
+            ['ROI', f"{return_on_invested_capital:.1%}"],
+            ['', ''],  # Section header
             ['Sharpe Ratio', f"{self.sharpe_ratio:.2f}"],
             ['Sortino Ratio', f"{self.sortino_ratio:.2f}"],
             ['Max Drawdown', f"{self.max_drawdown:.1%}"],
             ['VaR (95%)', f"{risk_metrics['var_95']:.1%}"],
-            ['', ''],  # Spacing
-            ['Trading Stats', ''],  # Section header
+            ['',''],
             ['Total Trades', str(len(self.trades))],
             ['Win Rate', f"{self.win_rate:.1%}"],
             ['Avg Duration', f"{np.mean([t.duration_hours for t in self.trades]):.1f}h"],

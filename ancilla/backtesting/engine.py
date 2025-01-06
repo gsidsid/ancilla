@@ -27,8 +27,9 @@ class Backtest:
         initial_capital: float,
         start_date: datetime,
         end_date: datetime,
-        tickers: List[str],
-        frequency: str = "30min", # 30min or 1hour
+        tickers: List[str],\
+        frequency: str = "30min", # realistically 30min or 1hour
+        enable_naked_options: bool = True,
         commission_config: Optional[CommissionConfig] = None,
         slippage_config: Optional[SlippageConfig] = None,
         deterministic_fill: bool = False,
@@ -42,7 +43,7 @@ class Backtest:
         self.strategy = strategy
         # Generate portfolio name from strategy name and timestamp
         name = f"{strategy.name}_orders"
-        self.portfolio = Portfolio(name, initial_capital)
+        self.portfolio = Portfolio(name, initial_capital, enable_naked_options)
         self.frequency = frequency
 
         # Set timezone to Eastern Time
@@ -100,7 +101,7 @@ class Backtest:
         ticker = instrument.format_option_ticker() if instrument.is_option else instrument.underlying_ticker
         week_end = timestamp + timedelta(days=(4 - timestamp.weekday()) % 7)
         bars = self.data_provider.get_intraday_bars(
-            ticker=instrument.format_option_ticker(),
+            ticker=ticker,
             start_date=timestamp.astimezone(pytz.UTC),
             end_date=week_end.astimezone(pytz.UTC),
             interval=self.frequency
@@ -127,7 +128,7 @@ class Backtest:
 
         # Calculate execution details using broker simulation
         execution_details = self.broker.calculate_execution_details(
-            ticker=instrument.ticker if not instrument.is_option else instrument.format_option_ticker(),
+            ticker=ticker,
             base_price=price,
             quantity=quantity,
             market_data=data,
@@ -135,7 +136,7 @@ class Backtest:
         )
         if not execution_details or execution_details.adjusted_quantity == 0:
             self.logger.warning(
-                f"Failed to calculate execution details for order ({ticker}), likely due to low volume. Details: {instrument.ticker if not instrument.is_option else instrument.format_option_ticker()}, {quantity} @ {price}" + "\n" +
+                f"Failed to calculate execution details for order ({ticker}), likely due to low volume. Attempted: {instrument.ticker if not instrument.is_option else instrument.format_option_ticker()}, {quantity} @ {price}" + "\n" +
                 f"\t  Market data: {data}"
             )
             return False
@@ -145,86 +146,32 @@ class Backtest:
         if not is_assignment and np.random.random() > fill_probability:
             self.logger.warning(
                 f"Order failed to fill: {instrument.ticker} {execution_details.adjusted_quantity} @ {execution_details.execution_price:.2f} "
-                f"(fill probability: {fill_probability:.2%})"
+                f"(fill probability @ {fill_probability:.2%})"
             )
             return False
 
-        # Execute the order based on whether it's opening or closing a position
+        # Create, update, or close a position
         success = False
         quantity = execution_details.adjusted_quantity
-        if quantity > 0:  # Buying
-            if instrument.is_option:
-                option_ticker = instrument.format_option_ticker()
-                if option_ticker in self.portfolio.positions:
-                    # Buying to close a short option position
-                    position = self.portfolio.positions[option_ticker]
-                    # initial_premium = abs(position.quantity) * position.entry_price * instrument.get_multiplier()
-                    # buyback_cost = abs(quantity) * execution_details.execution_price * instrument.get_multiplier()
-
-                    success = self.portfolio.close_position(
-                        instrument=position.instrument,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs,
-                    )
-                else:
-                    # Opening a new long option position
-                    success = self.portfolio.open_position(
-                        instrument=instrument,
-                        quantity=quantity,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs
-                    )
-            else:
-                # Opening a new stock position
-                success = self.portfolio.open_position(
-                    instrument=instrument,
-                    quantity=quantity,
-                    price=execution_details.execution_price,
-                    timestamp=timestamp,
-                    transaction_costs=execution_details.total_transaction_costs
-                )
-        else:  # Selling
-            if instrument.is_option:
-                option_ticker = instrument.format_option_ticker()
-                if option_ticker in self.portfolio.positions:
-                    # Selling to close a long option position
-                    position = self.portfolio.positions[option_ticker]
-
-                    success = self.portfolio.close_position(
-                        instrument=position.instrument,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs,
-                    )
-                else:
-                    # Opening a new short option position
-                    success = self.portfolio.open_position(
-                        instrument=instrument,
-                        quantity=quantity,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs
-                    )
-            else:
-                # Closing a long stock position
-                if instrument.ticker in self.portfolio.positions:
-                    success = self.portfolio.close_position(
-                        instrument=self.portfolio.positions[instrument.ticker].instrument,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs
-                    )
-                # Going short on a stock
-                else:
-                    success = self.portfolio.open_position(
-                        instrument=instrument,
-                        quantity=quantity,
-                        price=execution_details.execution_price,
-                        timestamp=timestamp,
-                        transaction_costs=execution_details.total_transaction_costs
-                    )
+        position_exists = ticker in self.portfolio.positions
+        position_args = {
+            'price': execution_details.execution_price,
+            'timestamp': timestamp,
+            'transaction_costs': execution_details.total_transaction_costs
+        }
+        if position_exists:
+            # Close existing position
+            success = self.portfolio.close_position(
+                instrument=self.portfolio.positions[ticker].instrument,
+                **position_args
+            )
+        else:
+            # Open new position
+            success = self.portfolio.open_position(
+                instrument=instrument,
+                quantity=quantity,
+                **position_args
+            )
 
         # Track trade metrics
         if success:
@@ -232,15 +179,12 @@ class Backtest:
             self.daily_metrics['fills'].append(1.0)
             self.daily_metrics['slippage'].append(execution_details.price_impact)
             self.daily_metrics['commissions'].append(execution_details.commission)
-
             self.fill_ratios.append(fill_probability)
             self.slippage_costs.append(execution_details.slippage)
             self.commission_costs.append(execution_details.commission)
             self.total_transaction_costs.append(execution_details.total_transaction_costs)
-
-            # Log execution
             self.logger.info(
-                f"Order executed: {instrument.ticker} {quantity} @ {execution_details.execution_price:.2f}\n"
+                f"Order executed: {ticker} {quantity} @ {execution_details.execution_price:.2f}\n"
                 f"  Base price: ${price:.2f}\n"
                 f"  Impact: {execution_details.price_impact:.2%}\n"
                 f"  Commission: ${execution_details.commission:.2f}\n"
@@ -274,7 +218,7 @@ class Backtest:
             # Update tickers
             self.tickers = self._update_option_tickers(current_date - timedelta(days=1))
 
-            # Fetch weekly data for each active ticker
+            # Batch-fetch data for each active ticker this trading week
             for ticker in self.tickers:
                 bars = self.data_provider.get_intraday_bars(
                     ticker=ticker,
@@ -285,9 +229,8 @@ class Backtest:
                 if bars is not None and not bars.empty:
                     self.weekly_data[ticker] = bars
 
-            # Process each day in the week
+            # Process each day in the trading week
             while current_date <= week_end:
-                # Skip all non-trading hours
                 market_hours = self.data_provider.get_market_hours(current_date)
                 if not market_hours:
                     current_date += timedelta(days=1)
@@ -299,9 +242,8 @@ class Backtest:
                 while current_time <= market_close:
                     self.last_timestamp = current_time
 
-                    # Extract relevant data for current hour from weekly data
+                    # Find current bars in weekly pull for each ticker
                     for ticker in self.tickers:
-                        # Get current data from cached weekly pull
                         bars = self.weekly_data[ticker]
                         window_start = (current_time - frequency_delta).astimezone(pytz.UTC)
                         window_end = (current_time).astimezone(pytz.UTC)
@@ -309,23 +251,22 @@ class Backtest:
                             (bars.index > window_start) &
                             (bars.index <= window_end)
                         ]
-                        # Only continue if we have data...
                         if window_bars.empty:
                             continue
                         self.market_data[ticker] = window_bars.iloc[0].to_dict()
 
-                        # Convert current time to Eastern for strategy + progress display
-                        eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
-                        strategy_formatter = logging.Formatter(
-                            fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
-                        )
-                        self.strategy.logger.handlers[0].setFormatter(strategy_formatter)
-                        self.strategy.logger.handlers[1].setFormatter(strategy_formatter)
-                        current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
-                        print(current_line, end='\r')
+                    # Legible strategy progress display
+                    eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
+                    strategy_formatter = logging.Formatter(
+                        fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
+                    )
+                    self.strategy.logger.handlers[0].setFormatter(strategy_formatter)
+                    self.strategy.logger.handlers[1].setFormatter(strategy_formatter)
+                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
+                    print(current_line, end='\r')
 
-                        # Execute backtest strategy
-                        self.strategy.on_data(current_time, self.market_data)
+                    # Execute backtest strategy
+                    self.strategy.on_data(current_time, self.market_data)
 
                     # Update portfolio equity curve prices as of strategy execution
                     current_prices = {}
@@ -336,7 +277,9 @@ class Backtest:
 
                     current_time += frequency_delta
 
-                # Process option expirations at end of day
+                # Attempt to process option expirations
+                # Options only clear here on Fridays at 4:00 PM
+                # So there may be hanging expired positions
                 last_market_close = market_close
                 self._process_option_expiration(
                     current_date, market_close.astimezone(pytz.timezone('US/Eastern')))
@@ -362,17 +305,14 @@ class Backtest:
                     pos.instrument.expiration.date() == current_date.date() and
                     pos.instrument.expiration.year == current_date.year)
             ]
-
         if not option_positions:
             return
 
-        # Then check if we're at Friday 4 PM
         is_expiration_time = (
             expiration_time.hour == 16 and
             expiration_time.minute == 0 and
             expiration_time.weekday() == 4  # Friday
         )
-
         if not is_expiration_time:
             return
 
@@ -410,81 +350,43 @@ class Backtest:
             MIN_ITM_THRESHOLD = 0.01
             is_itm = intrinsic_value > MIN_ITM_THRESHOLD
 
-            # Determine the action based on position type and option type
+            # Determine the action based on position and option types
             if is_itm:
                 if position.quantity < 0:
                     # Short Option Assignment
-                    if option.instrument_type == InstrumentType.CALL_OPTION:
-                        # Short Call Assignment: Sell underlying stock at strike price
-                        self.portfolio.handle_assignment(
-                            option=option,
-                            strike_price=option.strike,
-                            timestamp=expiration_time,
-                            is_call=True,
-                            broker=self.broker
-                        )
-                    elif option.instrument_type == InstrumentType.PUT_OPTION:
-                        # Short Put Assignment: Buy underlying stock at strike price
-                        self.portfolio.handle_assignment(
-                            option=option,
-                            strike_price=option.strike,
-                            timestamp=expiration_time,
-                            is_call=False,
-                            broker=self.broker
-                        )
+                    self.portfolio.handle_assignment(
+                        option=option,
+                        strike_price=option.strike,
+                        timestamp=expiration_time,
+                        is_call=option.instrument_type == InstrumentType.CALL_OPTION,
+                        broker=self.broker
+                    )
                 else:
                     # Long Option Exercise
-                    if option.instrument_type == InstrumentType.CALL_OPTION:
-                        # Long Call Exercise: Buy underlying stock at strike price
-                        self.portfolio.handle_exercise(
-                            option=option,
-                            strike_price=option.strike,
-                            timestamp=expiration_time,
-                            is_call=True,
-                            intrinsic_value=intrinsic_value,
-                            broker=self.broker
-                        )
-                    elif option.instrument_type == InstrumentType.PUT_OPTION:
-                        # Long Put Exercise: Sell underlying stock at strike price
-                        self.portfolio.handle_exercise(
-                            option=option,
-                            strike_price=option.strike,
-                            timestamp=expiration_time,
-                            is_call=False,
-                            intrinsic_value=intrinsic_value,
-                            broker=self.broker
-                        )
+                    # TODO: Only do this if we have the paper? Verify this logic is sound
+                    self.portfolio.handle_exercise(
+                        option=option,
+                        strike_price=option.strike,
+                        timestamp=expiration_time,
+                        is_call=option.instrument_type == InstrumentType.CALL_OPTION,
+                        intrinsic_value=intrinsic_value,
+                        broker=self.broker
+                    )
             else:
                 # Option expires worthless
-                if position.quantity < 0:
-                    # Short option: Keep premium
-                    self.logger.info(f"Option {ticker} expired worthless. Premium kept.")
-                    # Close the option position without any cash impact
-                    self.portfolio.close_position(
-                        instrument=option,
-                        price=0.0,  # Option expired worthless
-                        timestamp=expiration_time,
-                        quantity=position.quantity,
-                        transaction_costs=0.0
-                    )
-                else:
-                    # Long option: Lose premium
-                    self.logger.info(f"Option {ticker} expired worthless. Premium lost.")
-                    # Close the option position without any additional action
-                    self.portfolio.close_position(
-                        instrument=option,
-                        price=0.0,  # Option expired worthless
-                        timestamp=expiration_time,
-                        quantity=position.quantity,
-                        transaction_costs=0.0
-                    )
+                # Close the option position without any cash impact
+                self.logger.info(f"Option {ticker} expired worthless. Premium kept.")
+                self.portfolio.close_position(
+                    instrument=option,
+                    price=0.0,  # Option expired worthless
+                    timestamp=expiration_time,
+                    quantity=position.quantity,
+                    transaction_costs=0.0
+                )
 
-            # Remove the option ticker from the list of tickers if fully closed
             if ticker not in self.portfolio.positions:
                 if ticker in self.tickers:
                     self.tickers.remove(ticker)
-
-            # Log final state
             self.logger.info(
                 f"Option Expiration Summary for {ticker}:\n"
                 f"  ITM: {is_itm}\n"
@@ -497,7 +399,6 @@ class Backtest:
         self.logger.info(f"Found {len(positions_to_close)} open positions")
         for t, p in positions_to_close:
             self.logger.info(f"  {t}: {p.quantity} units @ {p.entry_price}")
-
         for ticker, position in positions_to_close:
             closing_time = current_date.replace(hour=16, minute=0, second=0)
             closing_price = self.market_data[ticker]['close']
@@ -513,7 +414,6 @@ class Backtest:
                     'option' if position.instrument.is_option else 'stock'
                 )
             )
-
             if success:
                 self.logger.info(f"Automatically closed position in {ticker} @ {closing_price:.2f}")
             else:
@@ -585,6 +485,7 @@ class Backtest:
                 self.logger.warning(f"Error processing option ticker {ticker}: {str(e)}")
                 continue
 
+        # Ensure the tickers are de-duplicated
         return list(set(active_tickers))
 
     def buy_stock(

@@ -21,11 +21,9 @@ def calculate_return_metrics(
     returns = equity_series.pct_change()
     total_return = (equity_series.iloc[-1] / equity_series.iloc[0]) - 1
     period_length = len(equity_series)
-
-    daily_std = returns.std()
+    daily_std = returns.std() # relatable
     annualized_vol = daily_std * np.sqrt(trading_days) if daily_std != 0 else 0
     annualized_return = ((1 + total_return) ** (trading_days / period_length)) - 1
-
     return {
         'total_return': total_return,
         'annualized_return': annualized_return,
@@ -45,7 +43,6 @@ def calculate_drawdown_metrics(equity_series: pd.Series) -> Dict[str, Any]:
     """
     peak = equity_series.cummax()
     drawdown = (equity_series - peak) / peak
-
     return {
         'max_drawdown': drawdown.min(),
         'drawdown_series': drawdown
@@ -72,12 +69,9 @@ def calculate_risk_metrics(
             'var_99': 0,
             'max_consecutive_losses': 0
         }
-
     downside_returns = returns[returns < 0]
     downside_std = downside_returns.std() * np.sqrt(trading_days)
     avg_return = returns.mean() * trading_days
-
-    # Calculate risk metrics
     metrics = {
         'sortino_ratio': avg_return / downside_std if downside_std != 0 else 0,
         'var_95': returns.quantile(0.05),
@@ -123,6 +117,7 @@ def calculate_trade_metrics(
     # - For assigned: premium received - assignment cost - transaction costs
     trade_pnls = []
     for trade in trades:
+        """
         if trade.instrument.instrument_type == InstrumentType.CALL_OPTION:
             # Calculate covered call P&L
             premium = abs(trade.quantity) * trade.entry_price * trade.instrument.get_multiplier()
@@ -138,15 +133,16 @@ def calculate_trade_metrics(
                 trade.quantity *
                 trade.instrument.get_multiplier()
             ) - trade.transaction_costs
-        trade_pnls.append(pnl)
+        """
+        trade_pnls.append(trade.pnl)
 
-    # Calculate wins and losses using corrected P&L
+    total_invested = sum([
+        abs(t.quantity) * t.entry_price * t.instrument.get_multiplier()
+        for t in trades])
+    return_on_invested_capital = sum([t.pnl for t in trades]) / total_invested
     wins = [pnl for pnl in trade_pnls if pnl > 0]
     losses = [pnl for pnl in trade_pnls if pnl <= 0]
-
     holding_periods = [(t.exit_time - t.entry_time).days for t in trades]
-
-    # Profit factor calculation with safety check for zero losses
     total_wins = sum(wins) if wins else 0
     total_losses = abs(sum(losses)) if losses else 0
     profit_factor = (
@@ -170,5 +166,7 @@ def calculate_trade_metrics(
         'assignment_rate': float(len([
             t for t in trades
             if t.instrument.instrument_type == InstrumentType.CALL_OPTION and t.assignment
-        ]) / len(trades) if trades else 0)
+        ]) / len(trades) if trades else 0),
+        'total_invested': float(total_invested),
+        'return_on_invested_capital': float(return_on_invested_capital)
     }
