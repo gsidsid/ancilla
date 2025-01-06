@@ -205,6 +205,8 @@ class Backtest:
             '15min': timedelta(minutes=15),
             '30min': timedelta(minutes=30),
             '1hour': timedelta(hours=1),
+            '2hour': timedelta(hours=2),
+            '1day': timedelta(days=1)
         }[self.frequency]
 
         while current_date <= self.end_date:

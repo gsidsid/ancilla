@@ -1,6 +1,7 @@
 # ancilla/backtesting/simulation.py
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+import copy
 
 @dataclass
 class CommissionConfig:
@@ -43,187 +44,64 @@ class Broker:
         self.deterministic_fill = deterministic_fill
         self._market_state = {}
 
-    def calculate_execution_details(
-        self,
-        ticker: str,
-        base_price: float,
-        quantity: int,
-        market_data: Dict[str, Any],
-        asset_type: str = 'stock'
-    ) -> Optional[ExecutionDetails]:
-        """
-        Calculates execution details using only OHLCV data.
-        Adjusts calculations for options based on price and spread characteristics.
-        """
-        # Extract market data
-        volume = market_data.get('volume', 0)
+    def calculate_execution_details(self, ticker, base_price, quantity, market_data, asset_type='stock'):
+        # Use 'vwap' for a more realistic base price if available
+        base_price = market_data.get('vwap', market_data.get('close', 0))
         high = market_data.get('high', base_price)
         low = market_data.get('low', base_price)
-
-        # For options, adjust volume interpretation
-        if asset_type == 'option':
-            # Options trade in much lower volume, so scale up the interpretation
-            # of what constitutes "good" volume
-            volume = max(volume * 50, 100)  # Assume minimum baseline liquidity
-
-            # Estimate option "tier" based on price to adjust expectations
-            if base_price <= 0.10:  # Deep OTM options
-                volume *= 0.2  # These are typically less liquid
-            elif base_price <= 0.50:
-                volume *= 0.5
-            elif base_price <= 1.0:
-                volume *= 0.8
-            elif base_price >= 10.0:  # ITM options
-                volume *= 0.7  # These are typically less liquid too
-
-        if volume == 0:
-            # Use price-based minimum volume assumption
-            min_volume = 1000 if asset_type == 'stock' else 50
-            volume = min_volume
-            # self.logger.warning(f"No volume data for {ticker}, using minimum volume of {min_volume}")
-
-        # Calculate direction
+        volume = market_data.get('volume', 1)
         direction = 1 if quantity > 0 else -1
 
-        # Calculate participation rate with option adjustments
-        base_participation = abs(quantity) / volume if volume > 0 else 1
-        if asset_type == 'option':
-            # Options can typically handle higher participation rates
-            participation_rate = base_participation * 0.5  # Scale down impact
-        else:
-            participation_rate = base_participation
+        # Participation rate
+        participation_rate = abs(quantity) / max(volume, 1)
 
-        # Calculate adjusted quantity
-        max_participation = 0.15 if asset_type == 'option' else 0.1
-        if participation_rate > max_participation:
-            adjusted_quantity = int(max_participation * volume) * direction
-        else:
-            adjusted_quantity = quantity
-
-        if adjusted_quantity == 0:
-            return None
-
-        # Calculate spread-based liquidity score
+        # Slippage adjustments
         relative_spread = (high - low) / base_price if high > low else 0.001
-        if asset_type == 'option':
-            # Options naturally have wider spreads
-            relative_spread = max(0.01, min(relative_spread * 0.5, 0.15))
-        liquidity_score = 1.0 - min(1.0, relative_spread * 10)
-
-        # Calculate volume-based liquidity component
-        if asset_type == 'option':
-            min_good_volume = 100  # Baseline for "good" option volume
-            volume_score = min(1.0, volume / min_good_volume)
-        else:
-            min_good_volume = 10000
-            volume_score = min(1.0, volume / min_good_volume)
-
-        # Combine liquidity scores
-        liquidity_score = (liquidity_score * 0.7 + volume_score * 0.3)
-
-        # Calculate impact components
-        spread = relative_spread
-        if asset_type == 'option':
-            # Options typically have higher spreads and impact
-            volume_impact = (participation_rate ** 0.3) * self.slippage_config.market_impact * 1.5
-            spread *= 1.2  # Wider spreads for options
-        else:
-            volume_impact = (participation_rate ** 0.5) * self.slippage_config.market_impact
-
-        spread_slippage = spread * self.slippage_config.spread_factor
-
-        # Calculate price impact
-        liquidity_adjustment = (1.5 - liquidity_score)
-        if asset_type == 'option':
-            # Price moves are typically more pronounced in options
-            liquidity_adjustment *= 1.3
-
-        price_impact = (
-            volume_impact * liquidity_adjustment +
-            self.slippage_config.base_points / 10000
-        ) * direction
-
-        # Calculate total slippage
         base_slippage = self.slippage_config.base_points / 10000
-        if asset_type == 'option':
-            # Options typically have higher base slippage
-            base_slippage *= 1.5
+        spread_slippage = relative_spread * self.slippage_config.spread_factor
+        scaled_market_impact = self._scale_market_impact(quantity, volume)
+        volume_impact = (participation_rate ** 0.5) * scaled_market_impact
 
-        total_slippage = (
-            base_slippage +
-            volume_impact +
-            spread_slippage
-        )
-
-        # Calculate execution price
+        total_slippage = base_slippage + spread_slippage + volume_impact
+        # Cap total slippage to prevent unrealistic jumps
+        MAX_SLIPPAGE = 0.01  # 1%
+        total_slippage = min(total_slippage, MAX_SLIPPAGE)
         execution_price = base_price * (1 + direction * total_slippage)
-
-        # Apply tick size rounding for options
-        if asset_type == 'option':
-            tick_size = 0.05 if base_price >= 3.0 else 0.01
-            execution_price = round(execution_price / tick_size) * tick_size
-
         slippage = execution_price - base_price
 
-        # Calculate commission
-        commission = self.calculate_commission(
-            price=execution_price,
-            quantity=adjusted_quantity,
-            asset_type=asset_type
-        )
+        # Commission
+        commission = self.calculate_commission(execution_price, quantity, asset_type)
 
-        # Calculate fill probability
-        if asset_type == 'option':
-            # Base probability on price and volume characteristics
-            base_prob = min(0.95, liquidity_score)
-
-            # Adjust based on price level
-            if base_price <= 0.10:
-                price_adj = 0.6  # Deep OTM options are harder to fill
-            elif base_price <= 0.50:
-                price_adj = 0.8
-            elif base_price <= 1.0:
-                price_adj = 0.9
-            else:
-                price_adj = 1.0
-
-            fill_probability = base_prob * price_adj
-        else:
-            fill_probability = self.estimate_market_hours_fill_probability(
-                price=execution_price,
-                quantity=adjusted_quantity,
-                market_data=market_data,
-                volume=volume,
-                asset_type=asset_type
-            )
-
+        # Fill Probability
         if self.deterministic_fill:
             fill_probability = 1.0
+        else:
+            if participation_rate < 0.01:
+                fill_probability = 0.99
+            elif participation_rate < 0.05:
+                fill_probability = 0.95
+            else:
+                fill_probability = 0.90
 
-        # Calculate total costs
-        total_transaction_costs = commission + abs(slippage)
-
+        # Return details
         return ExecutionDetails(
             execution_price=execution_price,
             slippage=slippage,
             commission=commission,
-            price_impact=price_impact,
+            price_impact=volume_impact * direction,
             fill_probability=fill_probability,
             participation_rate=participation_rate,
-            total_transaction_costs=total_transaction_costs,
-            adjusted_quantity=adjusted_quantity
+            total_transaction_costs=commission + abs(slippage),
+            adjusted_quantity=quantity
         )
 
-    def _calculate_liquidity_score(self, market_data: Dict[str, Any]) -> float:
-        """Calculate liquidity score based on market data."""
-        volume = market_data.get('volume', 0)
-        avg_volume = market_data.get('avg_volume', volume)
-        spread = market_data.get('spread', 0.01)
-
-        volume_score = min(1.0, volume / avg_volume if avg_volume > 0 else 0)
-        spread_score = min(1.0, 1 - (spread * 10))  # Penalize wide spreads
-
-        return (volume_score + spread_score) / 2
+    def _scale_market_impact(self, quantity, avg_volume):
+        ratio = quantity / max(avg_volume, 1)
+        # Continuous scaling factor based on square root law
+        scale = 1 / (1 + (ratio ** 0.5))
+        # Clamp scale factor
+        scale = max(0.1, min(scale, 1.0))
+        return self.slippage_config.market_impact * scale
 
     def calculate_commission(
         self,
