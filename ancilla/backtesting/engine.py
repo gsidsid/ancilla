@@ -46,6 +46,7 @@ class Backtest:
         self.strategy = strategy
         self.frequency = frequency
         self.risk_free_rate = risk_free_rate
+        self.logger = BacktesterLogger().get_logger()
 
         # Set timezone to Eastern Time
         start_date = start_date.astimezone(pytz.timezone("US/Eastern"))
@@ -57,6 +58,7 @@ class Backtest:
         self.end_date = end_date
         self.tickers = tickers
         self.weekly_data = {}
+        self.dividend_data = self._fetch_dividend_data()
 
         # Initialize market data
         self.market_data = market_data
@@ -76,7 +78,6 @@ class Backtest:
 
         # Initialize strategy
         self.strategy.initialize(self.portfolio, self)
-        self.logger = BacktesterLogger().get_logger()
 
         # Cache for daily metrics
         self.daily_metrics = {
@@ -195,8 +196,6 @@ class Backtest:
     def run(self) -> "BacktestResults":
         """Run the backtest."""
         current_date = self.start_date
-        consecutive_no_data = 0
-        max_no_data_days = 5
         last_market_close = self.start_date
         frequency_delta = {
             '1min': timedelta(minutes=1),
@@ -216,10 +215,11 @@ class Backtest:
                 self.end_date
             )
 
-            # Update tickers
+            # Update options tickers
             self.tickers = self._update_option_tickers(current_date - timedelta(days=1))
 
             # Batch-fetch data for each active ticker this trading week
+            # Will used cached data if available at backtest frequency
             for ticker in self.tickers:
                 bars = self.data_provider.get_intraday_bars(
                     ticker=ticker,
@@ -255,8 +255,11 @@ class Backtest:
                         if window_bars.empty:
                             continue
                         self.market_data[ticker] = window_bars.iloc[0].to_dict()
-                        # add current time as timestamp to market data
                         self.market_data[ticker]['timestamp'] = current_time
+
+                    # Apply dividend adjustments for the current time
+                    # This needs to happen right after market data is updated but before strategy execution
+                    self._adjust_for_dividends(current_time, self.market_data)
 
                     # Legible strategy progress display
                     eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
@@ -268,7 +271,7 @@ class Backtest:
                     current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
                     print(current_line, end='\r')
 
-                    # Execute backtest strategy
+                    # Execute backtest strategy with dividend-adjusted market data
                     market_data_with_indicators = MarketDataDict(
                         self.market_data,
                         self.market_history,
@@ -282,6 +285,7 @@ class Backtest:
                         self.market_history[ticker].append(self.market_data[ticker])
 
                     # Update portfolio equity curve prices as of strategy execution
+                    # Note: These prices are already dividend-adjusted
                     current_prices = {}
                     for ticker, data in self.market_data.items():
                         if 'close' in data:
@@ -442,8 +446,9 @@ class Backtest:
 
     def _update_option_tickers(self, current_date):
         """
+        Add tickers for new option positions to the list of active tickers.
         Filter out expired options from ticker list and clean up market data.
-        Only removes tickers that have been expired for more than a week.
+        Only remove tickers that have been expired for more than a week.
 
         Args:
             current_date: datetime object representing the current date
@@ -616,3 +621,66 @@ class Backtest:
         except Exception as e:
             self.logger.error(f"Error validating option order {option.ticker}: {str(e)}")
             return False
+
+    def _fetch_dividend_data(self):
+        """
+        Fetch dividend data for all tickers in the backtest period.
+        Returns a dictionary mapping tickers to their dividend DataFrames.
+        """
+        dividend_data = {}
+
+        # Format dates for Polygon API (YYYY-MM-DD)
+        formatted_start = self.start_date.strftime('%Y-%m-%d')
+        formatted_end = self.end_date.strftime('%Y-%m-%d')
+
+        for ticker in self.tickers:
+            # Skip option tickers
+            if len(ticker) > 6:  # Basic check for option tickers
+                continue
+
+            dividends_df = self.data_provider.get_dividends(
+                ticker=ticker,
+                start_date=formatted_start,
+                end_date=formatted_end
+            )
+
+            if dividends_df is not None and not dividends_df.empty:
+                dividend_data[ticker] = dividends_df
+                self.logger.info(f"Found {len(dividends_df)} dividends for {ticker}")
+
+        return dividend_data
+
+    def _adjust_for_dividends(self, current_time: datetime, market_data: dict):
+        """
+        Adjust market data for dividends on ex-dividend dates.
+        This modifies the market_data dictionary in place.
+        """
+        current_date = current_time.date()
+        # Only apply adjustment at market open UTC (9:30 AM ET)
+        is_market_open = current_time.strftime('%H:%M') == '14:30'
+        if not is_market_open:
+            return
+
+        for ticker, data in market_data.items():
+            # Skip if not a stock ticker or no dividend data
+            if len(ticker) > 6 or ticker not in self.dividend_data:
+                continue
+
+            dividends = self.dividend_data[ticker]
+            dividend_dates = dividends.index.date
+
+            # Check if there's a dividend on this date
+            if current_date in dividend_dates:
+                dividend_date_str = current_date.isoformat()
+                dividend_amount = dividends[dividends.index.strftime('%Y-%m-%d') == dividend_date_str]['amount'].iloc[0]
+
+                # Adjust OHLC prices by adding the dividend amount
+                # This simulates the price drop that occurs on ex-dividend date
+                data['open'] += dividend_amount
+                data['high'] += dividend_amount
+                data['low'] += dividend_amount
+                data['close'] += dividend_amount
+
+                self.logger.debug(
+                    f"Adjusted {ticker} prices for ${dividend_amount:.2f} dividend on {current_date}"
+                )

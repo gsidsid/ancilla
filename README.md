@@ -13,6 +13,7 @@ Currently featuring:
   - Batch requests and data caching for speed
   - Models slippage, commissions, price impact
   - Fill probability based on volume (or deterministic fills for testing)
+  - Adjusts for splits *and dividends*
   - Automatic ITM options exercise and assignment
   - Visualizations of trade history and performance
 
