@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
+
 def sma(values: List[float], period: int) -> Optional[float]:
     """
     Simple Moving Average
@@ -21,6 +22,7 @@ def sma(values: List[float], period: int) -> Optional[float]:
     if len(values) < period:
         return None
     return np.mean(values[-period:])
+
 
 def ema(values: List[float], period: int, smoothing: float = 2.0) -> Optional[float]:
     """
@@ -40,10 +42,11 @@ def ema(values: List[float], period: int, smoothing: float = 2.0) -> Optional[fl
     alpha = smoothing / (1 + period)
     ema_val = values[-period]
 
-    for price in values[-period+1:]:
+    for price in values[-period + 1 :]:
         ema_val = price * alpha + ema_val * (1 - alpha)
 
     return ema_val
+
 
 def rsi(values: List[float], period: int = 14) -> Optional[float]:
     """
@@ -72,7 +75,10 @@ def rsi(values: List[float], period: int = 14) -> Optional[float]:
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def bollinger_bands(values: List[float], period: int = 20, num_std: float = 2.0) -> tuple[Optional[float], Optional[float], Optional[float]]:
+
+def bollinger_bands(
+    values: List[float], period: int = 20, num_std: float = 2.0
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Bollinger Bands (Middle, Upper, Lower)
 
@@ -95,7 +101,13 @@ def bollinger_bands(values: List[float], period: int = 20, num_std: float = 2.0)
 
     return middle, upper, lower
 
-def macd(values: List[float], fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> tuple[Optional[float], Optional[float], Optional[float]]:
+
+def macd(
+    values: List[float],
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Moving Average Convergence Divergence
 
@@ -127,7 +139,13 @@ def macd(values: List[float], fast_period: int = 12, slow_period: int = 26, sign
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
-def atr(high_values: List[float], low_values: List[float], close_values: List[float], period: int = 14) -> Optional[float]:
+
+def atr(
+    high_values: List[float],
+    low_values: List[float],
+    close_values: List[float],
+    period: int = 14,
+) -> Optional[float]:
     """
     Average True Range
 
@@ -147,20 +165,21 @@ def atr(high_values: List[float], low_values: List[float], close_values: List[fl
     for i in range(1, len(high_values)):
         high = high_values[i]
         low = low_values[i]
-        prev_close = close_values[i-1]
+        prev_close = close_values[i - 1]
 
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         tr_values.append(tr)
 
     return np.mean(tr_values[-period:])
 
-def volume_weighted_average_price(high_values: List[float], low_values: List[float],
-                                close_values: List[float], volume_values: List[int],
-                                period: int = None) -> Optional[float]:
+
+def volume_weighted_average_price(
+    high_values: List[float],
+    low_values: List[float],
+    close_values: List[float],
+    volume_values: List[int],
+    period: int = None,
+) -> Optional[float]:
     """
     Volume Weighted Average Price (VWAP)
 
@@ -183,13 +202,18 @@ def volume_weighted_average_price(high_values: List[float], low_values: List[flo
         close_values = close_values[-period:]
         volume_values = volume_values[-period:]
 
-    typical_prices = [(h + l + c) / 3 for h, l, c in zip(high_values, low_values, close_values)]
+    typical_prices = [
+        (h + l + c) / 3 for h, l, c in zip(high_values, low_values, close_values)
+    ]
     price_volume = sum(tp * v for tp, v in zip(typical_prices, volume_values))
     total_volume = sum(volume_values)
 
     return price_volume / total_volume if total_volume > 0 else None
 
-def historical_volatility(close_prices: List[float], period: int = 20, annualization_factor: int = 252) -> Optional[float]:
+
+def historical_volatility(
+    close_prices: List[float], period: int = 20, annualization_factor: int = 252
+) -> Optional[float]:
     """
     Calculate historical volatility (standard deviation of log returns, annualized)
 
@@ -205,15 +229,21 @@ def historical_volatility(close_prices: List[float], period: int = 20, annualiza
         return None
 
     # Calculate log returns
-    prices = np.array(close_prices[-period-1:])
+    prices = np.array(close_prices[-period - 1 :])
     log_returns = np.log(prices[1:] / prices[:-1])
 
     # Calculate annualized volatility
     return np.std(log_returns) * np.sqrt(annualization_factor)
 
-def garman_klass_volatility(high_values: List[float], low_values: List[float],
-                           open_values: List[float], close_values: List[float],
-                           period: int = 20, annualization_factor: int = 252) -> Optional[float]:
+
+def garman_klass_volatility(
+    high_values: List[float],
+    low_values: List[float],
+    open_values: List[float],
+    close_values: List[float],
+    period: int = 20,
+    annualization_factor: int = 252,
+) -> Optional[float]:
     """
     Calculate Garman-Klass volatility estimator using OHLC data
 
@@ -242,13 +272,18 @@ def garman_klass_volatility(high_values: List[float], low_values: List[float],
     log_co = np.log(np.array(close_values) / np.array(open_values))
 
     # Garman-Klass estimator
-    gk = 0.5 * np.mean(log_hl**2) - (2*np.log(2) - 1) * np.mean(log_co**2)
+    gk = 0.5 * np.mean(log_hl**2) - (2 * np.log(2) - 1) * np.mean(log_co**2)
 
     # Annualize the volatility
     return np.sqrt(gk * annualization_factor)
 
-def parkinson_volatility(high_values: List[float], low_values: List[float],
-                        period: int = 20, annualization_factor: int = 252) -> Optional[float]:
+
+def parkinson_volatility(
+    high_values: List[float],
+    low_values: List[float],
+    period: int = 20,
+    annualization_factor: int = 252,
+) -> Optional[float]:
     """
     Calculate Parkinson volatility estimator using high-low range
 
@@ -275,9 +310,17 @@ def parkinson_volatility(high_values: List[float], low_values: List[float],
     # Annualize the volatility
     return np.sqrt(estimator * annualization_factor)
 
-def calculate_implied_volatility(option_price: float, underlying_price: float, strike_price: float,
-                               time_to_expiry: float, risk_free_rate: float, is_call: bool,
-                               precision: float = 0.00001, max_iterations: int = 100) -> Optional[float]:
+
+def calculate_implied_volatility(
+    option_price: float,
+    underlying_price: float,
+    strike_price: float,
+    time_to_expiry: float,
+    risk_free_rate: float,
+    is_call: bool,
+    precision: float = 0.00001,
+    max_iterations: int = 100,
+) -> Optional[float]:
     """
     Calculate implied volatility using Newton-Raphson
 
@@ -299,22 +342,28 @@ def calculate_implied_volatility(option_price: float, underlying_price: float, s
     strike_price = max(strike_price, 0.01)
 
     def black_scholes(sigma):
-        d1 = (np.log(underlying_price / strike_price) +
-              (risk_free_rate + 0.5 * sigma ** 2) * time_to_expiry) / (sigma * np.sqrt(time_to_expiry))
+        d1 = (
+            np.log(underlying_price / strike_price)
+            + (risk_free_rate + 0.5 * sigma**2) * time_to_expiry
+        ) / (sigma * np.sqrt(time_to_expiry))
         d2 = d1 - sigma * np.sqrt(time_to_expiry)
 
         if is_call:
-            price = (underlying_price * norm.cdf(d1) -
-                    strike_price * np.exp(-risk_free_rate * time_to_expiry) * norm.cdf(d2))
+            price = underlying_price * norm.cdf(d1) - strike_price * np.exp(
+                -risk_free_rate * time_to_expiry
+            ) * norm.cdf(d2)
         else:
-            price = (strike_price * np.exp(-risk_free_rate * time_to_expiry) * norm.cdf(-d2) -
-                    underlying_price * norm.cdf(-d1))
+            price = strike_price * np.exp(-risk_free_rate * time_to_expiry) * norm.cdf(
+                -d2
+            ) - underlying_price * norm.cdf(-d1)
 
         return price
 
     def vega(sigma):
-        d1 = (np.log(underlying_price / strike_price) +
-              (risk_free_rate + 0.5 * sigma ** 2) * time_to_expiry) / (sigma * np.sqrt(time_to_expiry))
+        d1 = (
+            np.log(underlying_price / strike_price)
+            + (risk_free_rate + 0.5 * sigma**2) * time_to_expiry
+        ) / (sigma * np.sqrt(time_to_expiry))
         return underlying_price * np.sqrt(time_to_expiry) * norm.pdf(d1)
 
     # Initial guess
@@ -338,6 +387,7 @@ def calculate_implied_volatility(option_price: float, underlying_price: float, s
 
     return None  # Failed to converge
 
+
 def calculate_option_greeks(
     option_price: float,
     underlying_price: float,
@@ -345,7 +395,7 @@ def calculate_option_greeks(
     time_to_expiry: float,
     risk_free_rate: float,
     implied_vol: float,
-    is_call: bool
+    is_call: bool,
 ) -> dict:
     """
     Calculate all option Greeks
@@ -363,19 +413,15 @@ def calculate_option_greeks(
         Dictionary containing all Greeks (delta, gamma, theta, vega, rho)
     """
     if implied_vol <= 0 or time_to_expiry <= 0:
-        return {
-            'delta': None,
-            'gamma': None,
-            'theta': None,
-            'vega': None,
-            'rho': None
-        }
+        return {"delta": None, "gamma": None, "theta": None, "vega": None, "rho": None}
 
     sqrt_t = np.sqrt(time_to_expiry)
 
     # Calculate d1 and d2
-    d1 = (np.log(underlying_price / strike_price) +
-          (risk_free_rate + 0.5 * implied_vol ** 2) * time_to_expiry) / (implied_vol * sqrt_t)
+    d1 = (
+        np.log(underlying_price / strike_price)
+        + (risk_free_rate + 0.5 * implied_vol**2) * time_to_expiry
+    ) / (implied_vol * sqrt_t)
     d2 = d1 - implied_vol * sqrt_t
 
     # Standard normal PDF and CDF
@@ -397,7 +443,9 @@ def calculate_option_greeks(
 
     # Theta
     theta_part1 = -(underlying_price * norm_pdf_d1 * implied_vol) / (2 * sqrt_t)
-    theta_part2 = risk_free_rate * strike_price * np.exp(-risk_free_rate * time_to_expiry)
+    theta_part2 = (
+        risk_free_rate * strike_price * np.exp(-risk_free_rate * time_to_expiry)
+    )
 
     if is_call:
         theta = theta_part1 - theta_part2 * norm_cdf_d2
@@ -405,25 +453,39 @@ def calculate_option_greeks(
         theta = theta_part1 + theta_part2 * (1 - norm_cdf_d2)
 
     # Vega (same for calls and puts)
-    vega = underlying_price * sqrt_t * norm_pdf_d1 / 100  # Divided by 100 for percentage move
+    vega = (
+        underlying_price * sqrt_t * norm_pdf_d1 / 100
+    )  # Divided by 100 for percentage move
 
     # Rho
     if is_call:
-        rho = strike_price * time_to_expiry * np.exp(-risk_free_rate * time_to_expiry) * norm_cdf_d2 / 100
+        rho = (
+            strike_price
+            * time_to_expiry
+            * np.exp(-risk_free_rate * time_to_expiry)
+            * norm_cdf_d2
+            / 100
+        )
     else:
-        rho = -strike_price * time_to_expiry * np.exp(-risk_free_rate * time_to_expiry) * (1 - norm_cdf_d2) / 100
+        rho = (
+            -strike_price
+            * time_to_expiry
+            * np.exp(-risk_free_rate * time_to_expiry)
+            * (1 - norm_cdf_d2)
+            / 100
+        )
 
-    return {
-        'delta': delta,
-        'gamma': gamma,
-        'theta': theta,
-        'vega': vega,
-        'rho': rho
-    }
+    return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega, "rho": rho}
 
-def yang_zhang_volatility(open_values: List[float], high_values: List[float],
-                         low_values: List[float], close_values: List[float],
-                         period: int = 20, annualization_factor: int = 252) -> Optional[float]:
+
+def yang_zhang_volatility(
+    open_values: List[float],
+    high_values: List[float],
+    low_values: List[float],
+    close_values: List[float],
+    period: int = 20,
+    annualization_factor: int = 252,
+) -> Optional[float]:
     """
     Calculate Yang-Zhang volatility estimator, which is robust to opening jumps and drift
 
@@ -450,11 +512,11 @@ def yang_zhang_volatility(open_values: List[float], high_values: List[float],
     # Calculate overnight volatility (close-to-open)
     # Use [:-1] and [1:] to ensure matching array lengths
     log_co = np.log(opens[1:] / closes[:-1])
-    vo = np.sum(log_co ** 2) / (period - 1)
+    vo = np.sum(log_co**2) / (period - 1)
 
     # Calculate open-to-close volatility
     log_oc = np.log(closes[:-1] / opens[1:])
-    voc = np.sum(log_oc ** 2) / (period - 1)
+    voc = np.sum(log_oc**2) / (period - 1)
 
     # Calculate Rogers-Satchell volatility
     # Use arrays of the same length

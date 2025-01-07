@@ -20,10 +20,12 @@ dotenv.load_dotenv()
 #                   MOCK-BASED UNIT TESTS
 ############################################################
 
+
 @pytest.fixture
 def mock_client():
     """Create a mock Polygon REST client."""
     return Mock()
+
 
 @pytest.fixture
 def provider(mock_client):
@@ -37,6 +39,7 @@ def provider(mock_client):
         pdp.cache.clear()
         yield pdp
 
+
 def create_mock_agg(timestamp: int, open_, high, low, close, volume, vwap=None) -> Mock:
     agg = Mock()
     agg.timestamp = timestamp
@@ -48,9 +51,16 @@ def create_mock_agg(timestamp: int, open_, high, low, close, volume, vwap=None) 
     agg.vwap = vwap
     return agg
 
-def create_mock_option(strike: float, expiry: str, contract_type: str,
-                       iv: float, greeks: Dict[str, float],
-                       quote: Dict[str, float], volume: int) -> Mock:
+
+def create_mock_option(
+    strike: float,
+    expiry: str,
+    contract_type: str,
+    iv: float,
+    greeks: Dict[str, float],
+    quote: Dict[str, float],
+    volume: int,
+) -> Mock:
     option = Mock()
     option.details = Mock()
     option.details.strike_price = strike
@@ -67,6 +77,7 @@ def create_mock_option(strike: float, expiry: str, contract_type: str,
     option.implied_volatility = iv * 100  # stored as a percentage
     return option
 
+
 class TestPolygonDataProviderMock:
     """Mock-based unit tests for PolygonDataProvider."""
 
@@ -78,7 +89,9 @@ class TestPolygonDataProviderMock:
 
     def test_retry_with_backoff(self, provider):
         """Ensure retry logic will re-attempt the correct number of times."""
-        mock_func = Mock(side_effect=[Exception("Test error"), Exception("Test error"), "success"])
+        mock_func = Mock(
+            side_effect=[Exception("Test error"), Exception("Test error"), "success"]
+        )
         result = provider._retry_with_backoff(mock_func)
         assert result == "success"
         assert mock_func.call_count == 3
@@ -171,7 +184,9 @@ class TestPolygonDataProviderMock:
         market_open = EST.localize(datetime(2024, 1, 2, 9, 30))
         mock_aggs = []
         current_time = market_open
-        while current_time.hour < 16 or (current_time.hour == 16 and current_time.minute == 0):
+        while current_time.hour < 16 or (
+            current_time.hour == 16 and current_time.minute == 0
+        ):
             mock_aggs.append(
                 create_mock_agg(
                     int(current_time.timestamp() * 1000),
@@ -186,7 +201,9 @@ class TestPolygonDataProviderMock:
             current_time += timedelta(minutes=5)
 
         mock_client.list_aggs.return_value = mock_aggs
-        df = provider.get_intraday_bars("AAPL", "2024-01-02", "2024-01-02", interval="5min")
+        df = provider.get_intraday_bars(
+            "AAPL", "2024-01-02", "2024-01-02", interval="5min"
+        )
         if df is not None and not df.empty:
             assert "regular_session" in df.columns
             assert df.index.tz.zone == "UTC"
@@ -215,7 +232,12 @@ class TestPolygonDataProviderMock:
                     expiry="2024-02-16",
                     contract_type="put",
                     iv=0.28,
-                    greeks={"delta": -0.40, "gamma": 0.03, "theta": -0.12, "vega": 0.25},
+                    greeks={
+                        "delta": -0.40,
+                        "gamma": 0.03,
+                        "theta": -0.12,
+                        "vega": 0.25,
+                    },
                     quote={"bid": 4.20, "ask": 4.40},
                     volume=300,
                 ),
@@ -237,8 +259,24 @@ class TestPolygonDataProviderMock:
         """
         # Mock daily aggregates
         mock_aggs = [
-            create_mock_agg(int(datetime(2024, 1, 1).timestamp() * 1000), 150, 155, 149, 153, 1000000, 152.5),
-            create_mock_agg(int(datetime(2024, 1, 2).timestamp() * 1000), 153, 158, 152, 157, 1200000, 155.5),
+            create_mock_agg(
+                int(datetime(2024, 1, 1).timestamp() * 1000),
+                150,
+                155,
+                149,
+                153,
+                1000000,
+                152.5,
+            ),
+            create_mock_agg(
+                int(datetime(2024, 1, 2).timestamp() * 1000),
+                153,
+                158,
+                152,
+                157,
+                1200000,
+                155.5,
+            ),
         ]
         mock_client.list_aggs.return_value = mock_aggs
         df = provider.get_daily_bars("AAPL", "2024-01-01", "2024-01-02")
@@ -253,11 +291,21 @@ class TestPolygonDataProviderMock:
         """
         mock_data = pd.DataFrame(
             {
-                "open": [100 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)],
-                "close": [100 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)],
-                "high": [105 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)],
-                "low": [95 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)],
-                "volume": [1000000 + np.random.randint(-100000, 100000) for _ in range(50)],
+                "open": [
+                    100 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)
+                ],
+                "close": [
+                    100 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)
+                ],
+                "high": [
+                    105 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)
+                ],
+                "low": [
+                    95 * (1 + 0.01 * i + np.random.normal(0, 0.02)) for i in range(50)
+                ],
+                "volume": [
+                    1000000 + np.random.randint(-100000, 100000) for _ in range(50)
+                ],
             },
             index=pd.date_range("2024-01-01", periods=50, tz=UTC),
         )
@@ -270,9 +318,11 @@ class TestPolygonDataProviderMock:
             for col in ["realized_vol", "parkinson_vol", "garman_klass_vol"]:
                 assert col in result.columns
 
+
 ############################################################
 #               LIVE INTEGRATION TESTS
 ############################################################
+
 
 @pytest.fixture(scope="session")
 def live_provider():
@@ -332,7 +382,9 @@ def test_get_options_chain(live_provider):
 
 def test_get_intraday_bars(live_provider):
     ticker = "AAPL"
-    df = live_provider.get_intraday_bars(ticker, "2024-01-03", "2024-01-03", interval="5min")
+    df = live_provider.get_intraday_bars(
+        ticker, "2024-01-03", "2024-01-03", interval="5min"
+    )
     if df is not None and not df.empty:
         assert "open" in df.columns
         assert "close" in df.columns

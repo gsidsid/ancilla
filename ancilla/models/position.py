@@ -5,9 +5,11 @@ from typing import Dict, TYPE_CHECKING
 if TYPE_CHECKING:
     from ancilla.models import Instrument
 
+
 @dataclass
 class Position:
     """Represents an open position."""
+
     instrument: "Instrument"
     quantity: int
     entry_price: float
@@ -51,6 +53,6 @@ class Position:
         position_cost = self.quantity * self.entry_price * multiplier
         gross_pnl = current_value - position_cost
         return {
-            'gross_pnl': gross_pnl,
-            'net_pnl': gross_pnl  # No transaction costs on unrealized P&L
+            "gross_pnl": gross_pnl,
+            "net_pnl": gross_pnl,  # No transaction costs on unrealized P&L
         }

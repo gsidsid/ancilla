@@ -8,6 +8,7 @@ from contextlib import contextmanager
 if TYPE_CHECKING:
     from ancilla.models import OptionData
 
+
 class BaseLogger:
     """Base logger class with common functionality"""
 
@@ -47,7 +48,7 @@ class BaseLogger:
 
         # Create formatter
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         file_handler.setFormatter(formatter)
 
@@ -61,9 +62,7 @@ class BaseLogger:
         console_handler.setLevel(logging.INFO)
 
         # Create formatter
-        formatter = logging.Formatter(
-            '%(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
         console_handler.setFormatter(formatter)
 
         # Add handler to logger
@@ -89,11 +88,13 @@ class BaseLogger:
                 self.logger.setLevel(self._previous_level)
                 self._previous_level = None
 
+
 class MarketDataLogger(BaseLogger):
     """Logger configuration for market data providers."""
 
     def __init__(self, provider_name: str):
         super().__init__(provider_name, "providers")
+
 
 class BacktesterLogger(BaseLogger):
     """Logger configuration for trading strategies."""
@@ -101,17 +102,20 @@ class BacktesterLogger(BaseLogger):
     def __init__(self):
         super().__init__("backtest", "strategies")
 
+
 class StrategyLogger(BaseLogger):
     """Logger configuration for trading strategies."""
 
     def __init__(self, strategy_name: str):
         super().__init__(strategy_name, "strategies")
 
+
 class VisualizerLogger(BaseLogger):
     """Logger configuration for data visualizers."""
 
     def __init__(self, visualizer_name: str):
         super().__init__(visualizer_name, "visualizers")
+
 
 class BookLogger(BaseLogger):
     """Logger for tracking portfolio changes and trades."""
@@ -141,75 +145,102 @@ class BookLogger(BaseLogger):
             "Delta: {delta:>6.3f} | IV: {iv:>6.2%}"
         )
 
-    def position_open(self, timestamp: datetime, ticker: str, quantity: int,
-                            price: float, position_type: str,
-                            capital: float):
+    def position_open(
+        self,
+        timestamp: datetime,
+        ticker: str,
+        quantity: int,
+        price: float,
+        position_type: str,
+        capital: float,
+    ):
         """Log opening a new position."""
         if self.logger is None:
             raise ValueError("Logger not initialized")
-        self.logger.debug(self.position_fmt.format(
-            timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=ticker,
-            action='OPEN',
-            quantity=quantity,
-            price=price,
-            position_type=position_type,
-            capital=capital
-        ))
+        self.logger.debug(
+            self.position_fmt.format(
+                timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                ticker=ticker,
+                action="OPEN",
+                quantity=quantity,
+                price=price,
+                position_type=position_type,
+                capital=capital,
+            )
+        )
 
-    def position_close(self, timestamp: datetime, ticker: str, quantity: int,
-                            price: float, position_type: str,
-                            capital: float):
+    def position_close(
+        self,
+        timestamp: datetime,
+        ticker: str,
+        quantity: int,
+        price: float,
+        position_type: str,
+        capital: float,
+    ):
         """Log closing a position."""
         if self.logger is None:
             raise ValueError("Logger not initialized")
 
-        self.logger.debug(self.position_fmt.format(
-            timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=ticker,
-            action='CLOSE',
-            quantity=quantity,
-            price=price,
-            position_type=position_type,
-            capital=capital
-        ))
+        self.logger.debug(
+            self.position_fmt.format(
+                timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                ticker=ticker,
+                action="CLOSE",
+                quantity=quantity,
+                price=price,
+                position_type=position_type,
+                capital=capital,
+            )
+        )
 
     def trade_complete(self, timestamp: datetime, trade: Any):
         """Log completed trade details."""
         if self.logger is None:
             raise ValueError("Logger not initialized")
-        self.logger.debug(self.trade_fmt.format(
-            timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=trade.instrument.ticker,
-            action='COMPLETE',
-            quantity=trade.quantity,
-            entry_price=trade.entry_price,
-            exit_price=trade.exit_price,
-            pnl=trade.pnl
-        ))
+        self.logger.debug(
+            self.trade_fmt.format(
+                timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                ticker=trade.instrument.ticker,
+                action="COMPLETE",
+                quantity=trade.quantity,
+                entry_price=trade.entry_price,
+                exit_price=trade.exit_price,
+                pnl=trade.pnl,
+            )
+        )
 
-    def capital_update(self, timestamp: datetime, cash: float,
-                            position_value: float, total_value: float):
+    def capital_update(
+        self,
+        timestamp: datetime,
+        cash: float,
+        position_value: float,
+        total_value: float,
+    ):
         """Log capital changes."""
         if self.logger is None:
             raise ValueError("Logger not initialized")
-        self.logger.debug(self.capital_fmt.format(
-            timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            cash=cash,
-            position_value=position_value,
-            total_value=total_value
-        ))
+        self.logger.debug(
+            self.capital_fmt.format(
+                timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                cash=cash,
+                position_value=position_value,
+                total_value=total_value,
+            )
+        )
 
     def option_data(self, timestamp: datetime, option: "OptionData"):
         """Log option contract details."""
         if self.logger is None:
             raise ValueError("Logger not initialized")
-        self.logger.debug(self.option_fmt.format(
-            timestamp=timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            ticker=option.instrument.ticker, # type: ignore
-            strike=option.strike,
-            contract_type=option.contract_type,
-            expiration=option.expiration.strftime('%Y-%m-%d'),
-            delta=option.delta if option.delta else 0,
-            iv=option.implied_volatility if option.implied_volatility else 0
-        ))
+        self.logger.debug(
+            self.option_fmt.format(
+                timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                ticker=option.instrument.ticker,  # type: ignore
+                strike=option.strike,
+                contract_type=option.contract_type,
+                expiration=option.expiration.strftime("%Y-%m-%d"),
+                delta=option.delta if option.delta else 0,
+                iv=option.implied_volatility if option.implied_volatility else 0,
+            )
+        )

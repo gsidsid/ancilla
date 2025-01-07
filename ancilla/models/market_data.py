@@ -5,14 +5,26 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 from ancilla.formulae.indicators import (
-    sma, ema, rsi, bollinger_bands, macd, atr, volume_weighted_average_price,
-    historical_volatility, garman_klass_volatility, parkinson_volatility,
-    yang_zhang_volatility, calculate_implied_volatility, calculate_option_greeks
+    sma,
+    ema,
+    rsi,
+    bollinger_bands,
+    macd,
+    atr,
+    volume_weighted_average_price,
+    historical_volatility,
+    garman_klass_volatility,
+    parkinson_volatility,
+    yang_zhang_volatility,
+    calculate_implied_volatility,
+    calculate_option_greeks,
 )
+
 
 @dataclass
 class MarketData:
     """Market data structure for a single instrument"""
+
     # OHLCV data
     # timestamp is set to the closing time of the bar
     timestamp: datetime
@@ -56,13 +68,19 @@ class MarketData:
         except AttributeError:
             raise KeyError(key)
 
+
 class MarketDataDict(dict):
     """
     A dictionary of MarketData objects indexed by ticker symbol.
     Provides helper methods for bulk processing of market data.
     """
-    def __init__(self, data_dict: Dict[str, Dict], history_dict: Dict[str, List[Dict]],
-                 risk_free_rate: Optional[float] = 0.05):
+
+    def __init__(
+        self,
+        data_dict: Dict[str, Dict],
+        history_dict: Dict[str, List[Dict]],
+        risk_free_rate: Optional[float] = 0.05,
+    ):
         """
         Initialize MarketDataDict from raw data dictionaries
 
@@ -72,6 +90,7 @@ class MarketDataDict(dict):
             risk_free_rate: Optional risk-free rate for options calculations
         """
         from ancilla.models import Option, InstrumentType
+
         super().__init__()
 
         # Process each ticker's data
@@ -90,26 +109,27 @@ class MarketDataDict(dict):
 
             # Create MarketData instance
             self[ticker] = self._create_market_data(
-                ticker,
-                ticker_data,
-                history,
-                risk_free_rate,
-                underlying_data
+                ticker, ticker_data, history, risk_free_rate, underlying_data
             )
 
-    def _create_market_data(self, ticker: str, data: Dict, history: List[Dict],
-                          risk_free_rate: Optional[float] = None,
-                          underlying_data: Optional[Dict] = None) -> MarketData:
+    def _create_market_data(
+        self,
+        ticker: str,
+        data: Dict,
+        history: List[Dict],
+        risk_free_rate: Optional[float] = None,
+        underlying_data: Optional[Dict] = None,
+    ) -> MarketData:
         """Create a single MarketData instance with calculated indicators"""
         from ancilla.models import Option, InstrumentType
         from datetime import timezone
 
         # Extract basic price histories
-        close_prices = [h['close'] for h in history] + [data['close']]
-        high_prices = [h['high'] for h in history] + [data['high']]
-        low_prices = [h['low'] for h in history] + [data['low']]
-        open_prices = [h['open'] for h in history] + [data['open']]
-        volume_values = [h['volume'] for h in history] + [data['volume']]
+        close_prices = [h["close"] for h in history] + [data["close"]]
+        high_prices = [h["high"] for h in history] + [data["high"]]
+        low_prices = [h["low"] for h in history] + [data["low"]]
+        open_prices = [h["open"] for h in history] + [data["open"]]
+        volume_values = [h["volume"] for h in history] + [data["volume"]]
 
         # Determine if this is an option
         is_option = len(ticker) > 5 and "O:" in ticker
@@ -121,67 +141,73 @@ class MarketDataDict(dict):
         implied_vol_val = None
         if option_instrument and underlying_data and risk_free_rate is not None:
             # Calculate time to expiry
-            time_to_expiry = (option_instrument.expiration.replace(tzinfo=timezone.utc) - data['timestamp']).days / 365.0
+            time_to_expiry = (
+                option_instrument.expiration.replace(tzinfo=timezone.utc)
+                - data["timestamp"]
+            ).days / 365.0
 
             # First calculate implied volatility
             implied_vol_val = calculate_implied_volatility(
-                option_price=data['close'],
-                underlying_price=underlying_data['close'],
+                option_price=data["close"],
+                underlying_price=underlying_data["close"],
                 strike_price=option_instrument.strike,
                 time_to_expiry=time_to_expiry,
                 risk_free_rate=risk_free_rate,
-                is_call=option_instrument.instrument_type == InstrumentType.CALL_OPTION
+                is_call=option_instrument.instrument_type == InstrumentType.CALL_OPTION,
             )
 
             # If we have implied vol, calculate all Greeks
             if implied_vol_val is not None:
                 greeks = calculate_option_greeks(
-                    option_price=data['close'],
-                    underlying_price=underlying_data['close'],
+                    option_price=data["close"],
+                    underlying_price=underlying_data["close"],
                     strike_price=option_instrument.strike,
                     time_to_expiry=time_to_expiry,
                     risk_free_rate=risk_free_rate,
                     implied_vol=implied_vol_val,
-                    is_call=option_instrument.instrument_type == InstrumentType.CALL_OPTION
+                    is_call=option_instrument.instrument_type
+                    == InstrumentType.CALL_OPTION,
                 )
                 data.update(greeks)  # Add calculated Greeks to data dict
 
         # Calculate intraday VWAP
-        current_date = data['timestamp'].date()
-        intraday_data = [h for h in history if h['timestamp'].date() == current_date]
+        current_date = data["timestamp"].date()
+        intraday_data = [h for h in history if h["timestamp"].date() == current_date]
         if intraday_data:
-            intraday_high = [h['high'] for h in intraday_data] + [data['high']]
-            intraday_low = [h['low'] for h in intraday_data] + [data['low']]
-            intraday_close = [h['close'] for h in intraday_data] + [data['close']]
-            intraday_volume = [h['volume'] for h in intraday_data] + [data['volume']]
+            intraday_high = [h["high"] for h in intraday_data] + [data["high"]]
+            intraday_low = [h["low"] for h in intraday_data] + [data["low"]]
+            intraday_close = [h["close"] for h in intraday_data] + [data["close"]]
+            intraday_volume = [h["volume"] for h in intraday_data] + [data["volume"]]
             vwap_val = volume_weighted_average_price(
                 intraday_high, intraday_low, intraday_close, intraday_volume
             )
         else:
-            vwap_val = data.get('vwap')
+            vwap_val = data.get("vwap")
 
         bollinger = bollinger_bands(close_prices)
         macd_vals = macd(close_prices)
 
         return MarketData(
-            timestamp=data['timestamp'],
-            open=data['open'],
-            high=data['high'],
-            low=data['low'],
-            close=data['close'],
-            volume=data['volume'],
-            vwap=data.get('vwap'),
-            trades=data.get('trades'),
+            timestamp=data["timestamp"],
+            open=data["open"],
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            volume=data["volume"],
+            vwap=data.get("vwap"),
+            trades=data.get("trades"),
             implied_vol=implied_vol_val,
-            delta=data.get('delta'),
-            gamma=data.get('gamma'),
-            theta=data.get('theta'),
-            vega=data.get('vega'),
-            rho=data.get('rho'),
+            delta=data.get("delta"),
+            gamma=data.get("gamma"),
+            theta=data.get("theta"),
+            vega=data.get("vega"),
+            rho=data.get("rho"),
             hist_volatility_20d=historical_volatility(close_prices),
             garman_klass_vol=garman_klass_volatility(
-                high_prices, low_values=low_prices,
-                open_values=open_prices, close_values=close_prices
+                high_prices,
+                low_values=low_prices,
+                open_values=open_prices,
+                close_values=close_prices,
             ),
             parkinson_vol=parkinson_volatility(high_prices, low_prices),
             yang_zhang_vol=yang_zhang_volatility(
@@ -197,5 +223,5 @@ class MarketDataDict(dict):
             macd_signal=macd_vals[1],
             macd_histogram=macd_vals[2],
             atr_14=atr(high_prices, low_prices, close_prices),
-            vwap_intraday=vwap_val
+            vwap_intraday=vwap_val,
         )

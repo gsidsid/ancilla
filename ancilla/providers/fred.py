@@ -8,6 +8,7 @@ from fredapi import Fred
 from ancilla.utils.caching import HybridCache
 from ancilla.utils.logging import MarketDataLogger
 
+
 class FREDDataProvider:
     def __init__(self, api_key: str, max_retries: int = 3, retry_delay: float = 1.0):
         """
@@ -23,7 +24,7 @@ class FREDDataProvider:
         self.retry_delay = retry_delay
 
         # Set up timezone
-        self.eastern_tz = pytz.timezone('US/Eastern')
+        self.eastern_tz = pytz.timezone("US/Eastern")
         self.utc_tz = pytz.UTC
 
         # Set up logging
@@ -38,10 +39,7 @@ class FREDDataProvider:
         self.min_request_interval = 0.5  # 500ms between requests
 
     def get_series(
-        self,
-        series_id: str,
-        start_date: datetime,
-        end_date: datetime
+        self, series_id: str, start_date: datetime, end_date: datetime
     ) -> Optional[pd.Series]:
         """
         Get FRED time series data with caching.
@@ -57,11 +55,13 @@ class FREDDataProvider:
         try:
             # Generate cache key
             cache_params = {
-                'series_id': series_id,
-                'start': start_date.strftime('%Y-%m-%d'),
-                'end': end_date.strftime('%Y-%m-%d')
+                "series_id": series_id,
+                "start": start_date.strftime("%Y-%m-%d"),
+                "end": end_date.strftime("%Y-%m-%d"),
             }
-            cache_key = f"series_{series_id}_{cache_params['start']}_{cache_params['end']}"
+            cache_key = (
+                f"series_{series_id}_{cache_params['start']}_{cache_params['end']}"
+            )
 
             # Check cache
             cached_data = self._get_cached_data(cache_key)
@@ -72,8 +72,8 @@ class FREDDataProvider:
             series = self._retry_with_backoff(
                 self.fred.get_series,
                 series_id,
-                observation_start=cache_params['start'],
-                observation_end=cache_params['end']
+                observation_start=cache_params["start"],
+                observation_end=cache_params["end"],
             )
 
             if series is not None:
@@ -85,13 +85,13 @@ class FREDDataProvider:
 
         except Exception as e:
             self.logger.error(f"Error fetching series {series_id}: {str(e)}")
-            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
+            self.logger.error(
+                f"Request: {locals().get('cache_params', 'Not available')}"
+            )
             return None
 
     def get_fed_funds_rate(
-        self,
-        start_date: datetime,
-        end_date: datetime
+        self, start_date: datetime, end_date: datetime
     ) -> Optional[pd.Series]:
         """
         Convenience method to get Fed Funds rates for a given date range.
@@ -103,7 +103,7 @@ class FREDDataProvider:
         Returns:
             Optional[pd.Series]: Fed funds rate time series if available
         """
-        return self.get_series('FEDFUNDS', start_date, end_date)
+        return self.get_series("FEDFUNDS", start_date, end_date)
 
     def _retry_with_backoff(self, func, *args, **kwargs):
         """Execute a function with exponential backoff retry logic."""
@@ -121,11 +121,15 @@ class FREDDataProvider:
 
             except Exception as e:
                 if attempt == self.max_retries - 1:
-                    self.logger.error(f"Failed after {self.max_retries} attempts: {str(e)}")
+                    self.logger.error(
+                        f"Failed after {self.max_retries} attempts: {str(e)}"
+                    )
                     raise e
 
-                wait_time = self.retry_delay * (2 ** attempt)
-                self.logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {str(e)}")
+                wait_time = self.retry_delay * (2**attempt)
+                self.logger.warning(
+                    f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {str(e)}"
+                )
                 time.sleep(wait_time)
 
     def _get_cached_data(self, cache_key: str) -> Optional[Dict[str, Any]]:

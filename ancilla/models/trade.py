@@ -4,9 +4,11 @@ from typing import Dict, Any, Optional
 
 from ancilla.models import Instrument
 
+
 @dataclass
 class Trade:
     """Represents a completed trade."""
+
     instrument: "Instrument"
     entry_time: datetime
     exit_time: datetime
@@ -31,10 +33,14 @@ class Trade:
         multiplier = 100 if self.instrument.is_option else 1
         if self.quantity < 0 and self.instrument.is_option:
             # Short option
-            gross_pnl = (self.entry_price - self.exit_price) * abs(self.quantity) * multiplier
+            gross_pnl = (
+                (self.entry_price - self.exit_price) * abs(self.quantity) * multiplier
+            )
         else:
             # Long option or stock
-            gross_pnl = (self.exit_price - self.entry_price) * self.quantity * multiplier
+            gross_pnl = (
+                (self.exit_price - self.entry_price) * self.quantity * multiplier
+            )
         return gross_pnl - self.transaction_costs
 
     @property
@@ -47,21 +53,29 @@ class Trade:
     def get_metrics(self) -> Dict[str, Any]:
         """Get comprehensive trade metrics."""
         return {
-            'ticker': self.instrument.ticker,
-            'type': 'option' if self.instrument.is_option else 'stock',
-            'entry_time': self.entry_time,
-            'exit_time': self.exit_time,
-            'entry_price': self.entry_price,
-            'exit_price': self.exit_price,
-            'quantity': self.quantity,
-            'pnl': self.pnl,
-            'return_pct': self.return_pct,
-            'duration_hours': self.duration_hours,
-            'transaction_costs': self.transaction_costs,
-            'option_type': self.instrument.instrument_type if self.instrument.is_option else None,
-            'option_ticker': self.instrument.format_option_ticker() if self.instrument.is_option else None,
-            'strike': self.instrument.strike if self.instrument.is_option else None,
-            'expiration': self.instrument.expiration if self.instrument.is_option else None,
-            'assignment': self.assignment,
-            'exercised': self.exercised
+            "ticker": self.instrument.ticker,
+            "type": "option" if self.instrument.is_option else "stock",
+            "entry_time": self.entry_time,
+            "exit_time": self.exit_time,
+            "entry_price": self.entry_price,
+            "exit_price": self.exit_price,
+            "quantity": self.quantity,
+            "pnl": self.pnl,
+            "return_pct": self.return_pct,
+            "duration_hours": self.duration_hours,
+            "transaction_costs": self.transaction_costs,
+            "option_type": (
+                self.instrument.instrument_type if self.instrument.is_option else None
+            ),
+            "option_ticker": (
+                self.instrument.format_option_ticker()
+                if self.instrument.is_option
+                else None
+            ),
+            "strike": self.instrument.strike if self.instrument.is_option else None,
+            "expiration": (
+                self.instrument.expiration if self.instrument.is_option else None
+            ),
+            "assignment": self.assignment,
+            "exercised": self.exercised,
         }

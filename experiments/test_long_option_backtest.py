@@ -10,6 +10,7 @@ from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
+
 class LongOptionStrategy(Strategy):
     """
     Simple Long Option Strategy that:
@@ -25,7 +26,7 @@ class LongOptionStrategy(Strategy):
         target_days_to_expiry: int = 30,
         exit_dte_threshold: int = 5,
         strike_flex_pct: float = 0.02,
-        trading_hours: tuple[int, int] = (10, 15)
+        trading_hours: tuple[int, int] = (10, 15),
     ):
         super().__init__(data_provider, name="long_option")
         self.position_size = position_size
@@ -45,7 +46,7 @@ class LongOptionStrategy(Strategy):
         # First manage existing positions
         for ticker in list(self.active_options.keys()):
             if ticker in market_data_snapshot:
-                current_price = market_data_snapshot[ticker]['close']
+                current_price = market_data_snapshot[ticker]["close"]
                 self._manage_existing_position(ticker, current_price, timestamp)
 
         # Then look for new positions
@@ -54,10 +55,12 @@ class LongOptionStrategy(Strategy):
             if len(ticker) > 5 or ticker in self.active_options:
                 continue
 
-            current_price = data['close']
+            current_price = data["close"]
             self._enter_option_position(ticker, current_price, timestamp)
 
-    def _enter_option_position(self, ticker: str, current_price: float, timestamp: datetime) -> None:
+    def _enter_option_position(
+        self, ticker: str, current_price: float, timestamp: datetime
+    ) -> None:
         """Enter a new ATM call option position."""
         portfolio_value = self.portfolio.get_total_value()
         position_value = portfolio_value * self.position_size
@@ -65,7 +68,7 @@ class LongOptionStrategy(Strategy):
         # Look for ATM calls
         strike_range = (
             current_price * (1 - self.strike_flex_pct),
-            current_price * (1 + self.strike_flex_pct)
+            current_price * (1 + self.strike_flex_pct),
         )
 
         available_calls = self.data_provider.get_options_contracts(
@@ -73,7 +76,7 @@ class LongOptionStrategy(Strategy):
             as_of=timestamp,
             strike_range=strike_range,
             max_expiration_days=self.target_days_to_expiry + 5,
-            contract_type='call'
+            contract_type="call",
         )
 
         if not available_calls:
@@ -81,26 +84,24 @@ class LongOptionStrategy(Strategy):
 
         # Filter for options close to target DTE
         valid_calls = [
-            call for call in available_calls
-            if abs((call.expiration.replace(tzinfo=pytz.UTC) - timestamp).days - self.target_days_to_expiry) <= 5
+            call
+            for call in available_calls
+            if abs(
+                (call.expiration.replace(tzinfo=pytz.UTC) - timestamp).days
+                - self.target_days_to_expiry
+            )
+            <= 5
         ]
 
         if not valid_calls:
             return
 
         # Select the call closest to ATM
-        selected_call = min(
-            valid_calls,
-            key=lambda x: abs(x.strike - current_price)
-        )
-
+        selected_call = min(valid_calls, key=lambda x: abs(x.strike - current_price))
 
         contracts = 1
 
-        success = self.engine.buy_option(
-            option=selected_call,
-            quantity=contracts
-        )
+        success = self.engine.buy_option(option=selected_call, quantity=contracts)
 
         if success:
             self.active_options[ticker] = selected_call
@@ -109,7 +110,9 @@ class LongOptionStrategy(Strategy):
                 f"expiring {selected_call.expiration.date()}"
             )
 
-    def _manage_existing_position(self, ticker: str, current_price: float, timestamp: datetime) -> None:
+    def _manage_existing_position(
+        self, ticker: str, current_price: float, timestamp: datetime
+    ) -> None:
         """Manage existing option position, exit if close to expiration."""
         option = self.active_options[ticker]
 
@@ -132,8 +135,7 @@ class LongOptionStrategy(Strategy):
 
             if position:
                 success = self.engine.sell_option(
-                    option=option,
-                    quantity=position.quantity
+                    option=option, quantity=position.quantity
                 )
 
                 if success:
@@ -141,6 +143,7 @@ class LongOptionStrategy(Strategy):
                     self.active_options.pop(ticker)
                 else:
                     self.logger.warning(f"Failed to sell calls for {ticker}")
+
 
 def test_long_option_strategy():
     """Run backtest with the long option strategy."""
@@ -153,10 +156,10 @@ def test_long_option_strategy():
     # Create strategy instance
     strategy = LongOptionStrategy(
         data_provider=data_provider,
-        position_size=0.1,            # 10% of portfolio per position
-        target_days_to_expiry=30,     # Target 30 DTE options
-        exit_dte_threshold=5,         # Exit with 5 or fewer days left
-        strike_flex_pct=0.02          # Allow ±2% flexibility in strike selection
+        position_size=0.1,  # 10% of portfolio per position
+        target_days_to_expiry=30,  # Target 30 DTE options
+        exit_dte_threshold=5,  # Exit with 5 or fewer days left
+        strike_flex_pct=0.02,  # Allow ±2% flexibility in strike selection
     )
 
     # Set up test parameters
@@ -173,17 +176,11 @@ def test_long_option_strategy():
         end_date=end_date,
         tickers=tickers,
         commission_config=CommissionConfig(
-            min_commission=1.0,
-            per_share=0.005,
-            per_contract=0.65,
-            percentage=0.0001
+            min_commission=1.0, per_share=0.005, per_contract=0.65, percentage=0.0001
         ),
         slippage_config=SlippageConfig(
-            base_points=1.0,
-            vol_impact=0.1,
-            spread_factor=0.5,
-            market_impact=0.1
-        )
+            base_points=1.0, vol_impact=0.1, spread_factor=0.5, market_impact=0.1
+        ),
     )
 
     # Run backtest

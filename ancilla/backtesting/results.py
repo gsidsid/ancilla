@@ -9,13 +9,17 @@ from datetime import datetime
 
 from ancilla.models import InstrumentType
 from ancilla.formulae.metrics import (
-    calculate_return_metrics, calculate_drawdown_metrics, calculate_risk_metrics,
-    calculate_trade_metrics
+    calculate_return_metrics,
+    calculate_drawdown_metrics,
+    calculate_risk_metrics,
+    calculate_trade_metrics,
 )
+
 
 @dataclass
 class BacktestResults:
     """Structured container for backtest results with analysis methods."""
+
     strategy_name: str
 
     # Core metrics
@@ -64,7 +68,9 @@ class BacktestResults:
         wins = sum(1 for t in self.trades if t.pnl > 0)
         return wins / len(self.trades)
 
-    def prepare_timeseries_data(self, data: Union[pd.DataFrame, pd.Series], value_column: str) -> pd.DataFrame:
+    def prepare_timeseries_data(
+        self, data: Union[pd.DataFrame, pd.Series], value_column: str
+    ) -> pd.DataFrame:
         """
         Prepare timeseries data for plotting by standardizing format and timezone.
 
@@ -95,21 +101,23 @@ class BacktestResults:
 
         # Standardize datetime column name
         datetime_col = df.columns[0]  # Assumes first column is datetime after reset
-        if datetime_col != 'datetime':
-            df = df.rename(columns={datetime_col: 'datetime'})
+        if datetime_col != "datetime":
+            df = df.rename(columns={datetime_col: "datetime"})
 
         # Convert to datetime type if needed
-        if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
-            df['datetime'] = pd.to_datetime(df['datetime'])
+        if not pd.api.types.is_datetime64_any_dtype(df["datetime"]):
+            df["datetime"] = pd.to_datetime(df["datetime"])
 
         # Handle timezone conversion
-        if df['datetime'].dt.tz is None:
-            df['datetime'] = df['datetime'].dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+        if df["datetime"].dt.tz is None:
+            df["datetime"] = (
+                df["datetime"].dt.tz_localize("UTC").dt.tz_convert("US/Eastern")
+            )
         else:
-            df['datetime'] = df['datetime'].dt.tz_convert('US/Eastern')
+            df["datetime"] = df["datetime"].dt.tz_convert("US/Eastern")
 
         # Add sequential index
-        df['sequential_index'] = df.index
+        df["sequential_index"] = df.index
 
         return df
 
@@ -120,30 +128,36 @@ class BacktestResults:
         """
         # Create figure with two subplots side by side
         fig = make_subplots(
-            rows=1, cols=2,
+            rows=1,
+            cols=2,
             column_widths=[0.8, 0.13],
             specs=[[{"secondary_y": include_drawdown}, {"type": "table"}]],
             horizontal_spacing=0.06,
         )
 
         # For equity data
-        equity_df = self.prepare_timeseries_data(self.equity_curve, 'equity')
+        equity_df = self.prepare_timeseries_data(self.equity_curve, "equity")
 
         # For drawdown data
-        drawdown_df = self.prepare_timeseries_data(self.drawdown_series, 'drawdown') if include_drawdown else None
+        drawdown_df = (
+            self.prepare_timeseries_data(self.drawdown_series, "drawdown")
+            if include_drawdown
+            else None
+        )
 
         # Add equity curve
         fig.add_trace(
             go.Scatter(
-                x=equity_df['sequential_index'],
-                y=equity_df['equity'],
-                name='Portfolio Value',
-                line=dict(color='#FF9900', width=2),
-                mode='lines',
-                hoverinfo='text',
-                hovertext=self._generate_hover_text(equity_df['datetime'])
+                x=equity_df["sequential_index"],
+                y=equity_df["equity"],
+                name="Portfolio Value",
+                line=dict(color="#FF9900", width=2),
+                mode="lines",
+                hoverinfo="text",
+                hovertext=self._generate_hover_text(equity_df["datetime"]),
             ),
-            row=1, col=1,
+            row=1,
+            col=1,
             secondary_y=False,
         )
 
@@ -151,18 +165,21 @@ class BacktestResults:
         if include_drawdown and drawdown_df is not None and not drawdown_df.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=drawdown_df['sequential_index'],
-                    y=drawdown_df['drawdown'] * 100,
-                    name='Drawdown %',
-                    line=dict(color='#FF4444', width=1, dash='dot'),
-                    mode='lines',
-                    hoverinfo='text',
+                    x=drawdown_df["sequential_index"],
+                    y=drawdown_df["drawdown"] * 100,
+                    name="Drawdown %",
+                    line=dict(color="#FF4444", width=1, dash="dot"),
+                    mode="lines",
+                    hoverinfo="text",
                     hovertext=[
                         f"Time: {dt.strftime('%Y-%m-%d %H:%M')}<br>Drawdown: {dd * 100:.2f}%"
-                        for dt, dd in zip(drawdown_df['datetime'], drawdown_df['drawdown'])
-                    ]
+                        for dt, dd in zip(
+                            drawdown_df["datetime"], drawdown_df["drawdown"]
+                        )
+                    ],
                 ),
-                row=1, col=1,
+                row=1,
+                col=1,
                 secondary_y=True,
             )
 
@@ -183,35 +200,35 @@ class BacktestResults:
         fig.add_trace(
             go.Table(
                 header=dict(
-                    values=['Metric', 'Value'],
-                    fill_color='rgb(30, 30, 30)',
-                    align='left',
-                    font=dict(family="Arial", color='white', size=11)
+                    values=["Metric", "Value"],
+                    fill_color="rgb(30, 30, 30)",
+                    align="left",
+                    font=dict(family="Arial", color="white", size=11),
                 ),
                 cells=dict(
                     values=list(zip(*summary_data)),
-                    fill_color='rgb(10, 10, 10)',
-                    align=['left', 'right'],
-                    line_color='rgb(30, 30, 30)',
-                    font=dict(family="Arial", color='white', size=10),
-                    height=25
+                    fill_color="rgb(10, 10, 10)",
+                    align=["left", "right"],
+                    line_color="rgb(30, 30, 30)",
+                    font=dict(family="Arial", color="white", size=10),
+                    height=25,
                 ),
             ),
-            row=1, col=2,
-
+            row=1,
+            col=2,
         )
 
         # Update layout
         fig.update_layout(
-            plot_bgcolor='black',
-            paper_bgcolor='black',
+            plot_bgcolor="black",
+            paper_bgcolor="black",
             title={
-                'text': self.strategy_name,
-                'y': 0.95,
-                'x': 0.4,
-                'xanchor': 'center',
-                'yanchor': 'top',
-                'font': dict(family="Arial", size=16, color='white')
+                "text": self.strategy_name,
+                "y": 0.95,
+                "x": 0.4,
+                "xanchor": "center",
+                "yanchor": "top",
+                "font": dict(family="Arial", size=16, color="white"),
             },
             showlegend=True,
             legend=dict(
@@ -220,50 +237,53 @@ class BacktestResults:
                 y=1.010,
                 xanchor="right",
                 x=0.75,
-                font=dict(family="Arial", size=10, color='white'),
-                bgcolor='rgba(0,0,0,0.5)'
+                font=dict(family="Arial", size=10, color="white"),
+                bgcolor="rgba(0,0,0,0.5)",
             ),
-            hovermode='x unified',
-            margin=dict(l=100, r=0, t=80, b=100)
+            hovermode="x unified",
+            margin=dict(l=100, r=0, t=80, b=100),
         )
 
         # Update axes for equity curve
         fig.update_xaxes(
-            row=1, col=1,
+            row=1,
+            col=1,
             showgrid=True,
-            gridcolor='#333333',
+            gridcolor="#333333",
             gridwidth=1,
-            griddash='dot',
+            griddash="dot",
             dtick=len(equity_df) // 20,  # Increased grid density
-            tickfont=dict(size=10, color='gray'),
+            tickfont=dict(size=10, color="gray"),
             tickangle=45,
-            title_font=dict(size=11, color='gray'),
-            title_text="Date"
+            title_font=dict(size=11, color="gray"),
+            title_text="Date",
         )
 
         fig.update_yaxes(
-            row=1, col=1,
+            row=1,
+            col=1,
             secondary_y=False,
             showgrid=True,
-            gridcolor='#333333',
+            gridcolor="#333333",
             gridwidth=1,
-            griddash='dot',
+            griddash="dot",
             dtick=self.final_capital / 20,  # Increased grid density
-            tickfont=dict(family="Arial", size=10, color='gray'),
-            title_font=dict(family="Arial", size=11, color='gray'),
-            tickformat="$,.0f"
+            tickfont=dict(family="Arial", size=10, color="gray"),
+            title_font=dict(family="Arial", size=11, color="gray"),
+            tickformat="$,.0f",
         )
 
         if include_drawdown:
             fig.update_yaxes(
-                row=1, col=1,
+                row=1,
+                col=1,
                 secondary_y=True,
                 showgrid=False,
-                gridcolor='#333333',
-                range=[drawdown_df['drawdown'].min() * 100 * 1.1, 0],
-                tickfont=dict(size=10, color='gray'),
-                title_font=dict(size=11, color='gray'),
-                tickformat=".1%"
+                gridcolor="#333333",
+                range=[drawdown_df["drawdown"].min() * 100 * 1.1, 0],
+                tickfont=dict(size=10, color="gray"),
+                title_font=dict(size=11, color="gray"),
+                tickformat=".1%",
             )
 
         fig.show()
@@ -275,8 +295,10 @@ class BacktestResults:
         Create Plotly scatter traces for trades with enhanced styling.
         """
         trade_traces = []
-        equity_df = self.prepare_timeseries_data(self.equity_curve, 'equity')
-        datetime_to_seq = dict(zip(equity_df['datetime'], equity_df['sequential_index']))
+        equity_df = self.prepare_timeseries_data(self.equity_curve, "equity")
+        datetime_to_seq = dict(
+            zip(equity_df["datetime"], equity_df["sequential_index"])
+        )
 
         for trade in self.trades:
             trade_time = trade.entry_time
@@ -284,33 +306,37 @@ class BacktestResults:
                 continue  # Skip trades outside trading hours
 
             seq_index = datetime_to_seq[trade_time]
-            trade_type = 'Option' if trade.instrument.is_option else 'Stock'
-            action = 'Buy' if trade.quantity > 0 else 'Sell'
+            trade_type = "Option" if trade.instrument.is_option else "Stock"
+            action = "Buy" if trade.quantity > 0 else "Sell"
 
             # markers
             if trade.instrument.is_option:
-                color = '#00FF00' if action == 'Buy' else '#FF4444'  # Bright green/red for options
-                symbol = 'diamond' if action == 'Buy' else 'diamond-cross'
+                color = (
+                    "#00FF00" if action == "Buy" else "#FF4444"
+                )  # Bright green/red for options
+                symbol = "diamond" if action == "Buy" else "diamond-cross"
                 size = 10
             else:
-                color = '#90EE90' if action == 'Buy' else '#FF6B6B'  # Softer green/red for stocks
-                symbol = 'triangle-up' if action == 'Buy' else 'triangle-down'
+                color = (
+                    "#90EE90" if action == "Buy" else "#FF6B6B"
+                )  # Softer green/red for stocks
+                symbol = "triangle-up" if action == "Buy" else "triangle-down"
                 size = 11
 
             trade_traces.append(
                 go.Scatter(
                     x=[seq_index],
-                    y=[self.equity_curve.loc[trade_time, 'equity']],
-                    mode='markers',
+                    y=[self.equity_curve.loc[trade_time, "equity"]],
+                    mode="markers",
                     marker=dict(
                         symbol=symbol,
                         size=size,
                         color=color,
-                        line=dict(width=1, color='white')
+                        line=dict(width=1, color="white"),
                     ),
                     name=f"{trade_type} {action}",
-                    hoverinfo='text',
-                    hovertext=self._generate_trade_hover_text(trade)
+                    hoverinfo="text",
+                    hovertext=self._generate_trade_hover_text(trade),
                 )
             )
         return trade_traces
@@ -329,7 +355,9 @@ class BacktestResults:
 
         for date in equity_dates:
             # Process all trades up to the current date
-            while trade_idx < num_trades and sorted_trades[trade_idx].entry_time <= date:
+            while (
+                trade_idx < num_trades and sorted_trades[trade_idx].entry_time <= date
+            ):
                 trade = sorted_trades[trade_idx]
                 ticker = trade.instrument.ticker
 
@@ -343,24 +371,26 @@ class BacktestResults:
                     ticker = trade.instrument.format_option_ticker()
                     if ticker not in current_holdings:
                         current_holdings[ticker] = {
-                            'quantity': 0,
-                            'instrument': trade.instrument,
-                            'avg_price': 0,
-                            'cost_basis': 0
+                            "quantity": 0,
+                            "instrument": trade.instrument,
+                            "avg_price": 0,
+                            "cost_basis": 0,
                         }
 
                     position = current_holdings[ticker]
-                    old_quantity = position['quantity']
+                    old_quantity = position["quantity"]
                     new_quantity = old_quantity + trade.quantity
 
                     if abs(trade.quantity) > 0:
-                        old_cost = position['avg_price'] * abs(old_quantity)
+                        old_cost = position["avg_price"] * abs(old_quantity)
                         new_cost = trade.entry_price * abs(trade.quantity)
-                        position['cost_basis'] = old_cost + new_cost
+                        position["cost_basis"] = old_cost + new_cost
                         if new_quantity != 0:
-                            position['avg_price'] = position['cost_basis'] / abs(new_quantity)
+                            position["avg_price"] = position["cost_basis"] / abs(
+                                new_quantity
+                            )
 
-                    position['quantity'] = new_quantity
+                    position["quantity"] = new_quantity
 
                     if new_quantity == 0:
                         del current_holdings[ticker]
@@ -369,24 +399,26 @@ class BacktestResults:
                     # Handle stocks
                     if ticker not in current_holdings:
                         current_holdings[ticker] = {
-                            'quantity': 0,
-                            'instrument': trade.instrument,
-                            'avg_price': 0,
-                            'cost_basis': 0
+                            "quantity": 0,
+                            "instrument": trade.instrument,
+                            "avg_price": 0,
+                            "cost_basis": 0,
                         }
 
                     position = current_holdings[ticker]
-                    old_quantity = position['quantity']
+                    old_quantity = position["quantity"]
                     new_quantity = old_quantity + trade.quantity
 
                     if trade.quantity > 0:
-                        old_cost = position['avg_price'] * abs(old_quantity)
+                        old_cost = position["avg_price"] * abs(old_quantity)
                         new_cost = trade.entry_price * trade.quantity
-                        position['cost_basis'] = old_cost + new_cost
+                        position["cost_basis"] = old_cost + new_cost
                         if new_quantity != 0:
-                            position['avg_price'] = position['cost_basis'] / abs(new_quantity)
+                            position["avg_price"] = position["cost_basis"] / abs(
+                                new_quantity
+                            )
 
-                    position['quantity'] = new_quantity
+                    position["quantity"] = new_quantity
 
                     if new_quantity == 0 or trade.assignment:
                         del current_holdings[ticker]
@@ -395,8 +427,10 @@ class BacktestResults:
 
             # Clean up expired options before recording holdings
             current_holdings = {
-                ticker: info for ticker, info in current_holdings.items()
-                if not info['instrument'].is_option or info['instrument'].expiration > date
+                ticker: info
+                for ticker, info in current_holdings.items()
+                if not info["instrument"].is_option
+                or info["instrument"].expiration > date
             }
 
             # Record current holdings
@@ -425,7 +459,7 @@ class BacktestResults:
         holdings = self._compute_holdings_over_time()
 
         for date in dates:
-            equity = self.equity_curve.loc[date, 'equity']
+            equity = self.equity_curve.loc[date, "equity"]
             holding_info = holdings.get(date, {})
             holdings_str = self._format_holdings(holding_info)
             hover_text = (
@@ -459,22 +493,20 @@ class BacktestResults:
 
         holdings_str = ""
         for ticker, info in holdings.items():
-            instrument = info['instrument']
-            quantity = info['quantity']
-            avg_price = info['avg_price']
+            instrument = info["instrument"]
+            quantity = info["quantity"]
+            avg_price = info["avg_price"]
 
             if instrument.is_option:
                 option_type = instrument.instrument_type.value
                 strike = instrument.strike
-                expiration = instrument.expiration.strftime('%Y-%m-%d')
+                expiration = instrument.expiration.strftime("%Y-%m-%d")
                 holdings_str += (
                     f"{instrument.ticker}: {quantity} {option_type} @ ${strike} "
                     f"(Avg: ${avg_price:.2f}) Exp: {expiration}<br>"
                 )
             else:
-                holdings_str += (
-                    f"{ticker}: {quantity} shares @ ${avg_price:.2f}<br>"
-                )
+                holdings_str += f"{ticker}: {quantity} shares @ ${avg_price:.2f}<br>"
         return holdings_str
 
     def _is_market_hours(self, timestamp) -> bool:
@@ -490,8 +522,8 @@ class BacktestResults:
             return False
 
         minutes_since_midnight = timestamp.hour * 60 + timestamp.minute
-        market_open = 9 * 60 + 30   # 9:30 AM
-        market_close = 16 * 60      # 4:00 PM
+        market_open = 9 * 60 + 30  # 9:30 AM
+        market_close = 16 * 60  # 4:00 PM
 
         return market_open <= minutes_since_midnight <= market_close
 
@@ -514,21 +546,23 @@ class BacktestResults:
             position_value = t.entry_price * abs(t.quantity) * multiplier
             return_pct = (t.realized_pnl / position_value) if position_value != 0 else 0
 
-            trades_data.append({
-                'entry_time': t.entry_time,
-                'exit_time': t.exit_time,
-                'duration': t.duration_hours,
-                'option_type': t.instrument.instrument_type.value,
-                'strike': t.instrument.strike,
-                'expiration': t.instrument.expiration,
-                'quantity': t.quantity,
-                'entry_price': t.entry_price,
-                'exit_price': t.exit_price,
-                'was_assigned': t.assignment if hasattr(t, 'assignment') else False,
-                'pnl': t.realized_pnl,
-                'return_pct': return_pct,
-                'transaction_costs': t.transaction_costs
-            })
+            trades_data.append(
+                {
+                    "entry_time": t.entry_time,
+                    "exit_time": t.exit_time,
+                    "duration": t.duration_hours,
+                    "option_type": t.instrument.instrument_type.value,
+                    "strike": t.instrument.strike,
+                    "expiration": t.instrument.expiration,
+                    "quantity": t.quantity,
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "was_assigned": t.assignment if hasattr(t, "assignment") else False,
+                    "pnl": t.realized_pnl,
+                    "return_pct": return_pct,
+                    "transaction_costs": t.transaction_costs,
+                }
+            )
 
         return pd.DataFrame(trades_data)
 
@@ -544,7 +578,7 @@ class BacktestResults:
         """
         try:
             # Parse expiration from an option ticker
-            parts = ticker.split(':')
+            parts = ticker.split(":")
             if len(parts) != 2:
                 raise ValueError(f"Invalid ticker format: {ticker}")
             symbol_part = parts[1]
@@ -566,25 +600,27 @@ class BacktestResults:
         metrics = {}
 
         # Value at Risk (VaR)
-        metrics['var_95'] = np.percentile(self.daily_returns, 5)
-        metrics['var_99'] = np.percentile(self.daily_returns, 1)
+        metrics["var_95"] = np.percentile(self.daily_returns, 5)
+        metrics["var_99"] = np.percentile(self.daily_returns, 1)
 
         # Conditional VaR (CVaR/Expected Shortfall)
-        metrics['cvar_95'] = self.daily_returns[
-            self.daily_returns <= metrics['var_95']
+        metrics["cvar_95"] = self.daily_returns[
+            self.daily_returns <= metrics["var_95"]
         ].mean()
 
         # Calmar Ratio (annual return / max drawdown)
-        metrics['calmar_ratio'] = (
+        metrics["calmar_ratio"] = (
             self.annualized_return / abs(self.max_drawdown)
-            if self.max_drawdown != 0 else 0
+            if self.max_drawdown != 0
+            else 0
         )
 
         # Information Ratio (assuming risk-free rate of 0 for simplicity)
         excess_returns = self.daily_returns
-        metrics['information_ratio'] = (
+        metrics["information_ratio"] = (
             excess_returns.mean() / excess_returns.std() * np.sqrt(252)
-            if excess_returns.std() != 0 else 0
+            if excess_returns.std() != 0
+            else 0
         )
 
         return metrics
@@ -597,15 +633,31 @@ class BacktestResults:
         options_trades = [t for t in self.trades if t.instrument.is_option]
         stock_trades = [t for t in self.trades if not t.instrument.is_option]
 
-        total_invested = sum([
-            t.quantity * t.entry_price * t.instrument.get_multiplier()
-            for t in self.trades if t.quantity > 0])
-        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested if total_invested != 0 else 0
+        total_invested = sum(
+            [
+                t.quantity * t.entry_price * t.instrument.get_multiplier()
+                for t in self.trades
+                if t.quantity > 0
+            ]
+        )
+        return_on_invested_capital = (
+            sum([t.pnl for t in self.trades]) / total_invested
+            if total_invested != 0
+            else 0
+        )
 
         # Calculate options performance metrics
         if options_trades:
-            calls = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.CALL_OPTION]
-            puts = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.PUT_OPTION]
+            calls = [
+                t
+                for t in options_trades
+                if t.instrument.instrument_type == InstrumentType.CALL_OPTION
+            ]
+            puts = [
+                t
+                for t in options_trades
+                if t.instrument.instrument_type == InstrumentType.PUT_OPTION
+            ]
             long_options = [t for t in options_trades if t.quantity > 0]
             short_options = [t for t in options_trades if t.quantity < 0]
 
@@ -639,20 +691,22 @@ class BacktestResults:
         ]
 
         if options_trades:
-            summary.extend([
-                "",
-                "Options Performance:",
-                f"Total Option Trades: {len(options_trades)}",
-                f"  - Calls: {len(calls)}",
-                f"  - Puts: {len(puts)}",
-                f"  - Long: {len(long_options)}",
-                f"  - Short: {len(short_options)}",
-                "",
-                f"Average Option P&L: ${np.mean(option_pnls):.2f}",
-                f"Total Option P&L: ${sum(option_pnls):.2f}",
-                f"Option Win Rate: {len([p for p in option_pnls if p > 0])/len(option_pnls):.2%}",
-                f"Assignment Rate: {len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.2%}"
-            ])
+            summary.extend(
+                [
+                    "",
+                    "Options Performance:",
+                    f"Total Option Trades: {len(options_trades)}",
+                    f"  - Calls: {len(calls)}",
+                    f"  - Puts: {len(puts)}",
+                    f"  - Long: {len(long_options)}",
+                    f"  - Short: {len(short_options)}",
+                    "",
+                    f"Average Option P&L: ${np.mean(option_pnls):.2f}",
+                    f"Total Option P&L: ${sum(option_pnls):.2f}",
+                    f"Option Win Rate: {len([p for p in option_pnls if p > 0])/len(option_pnls):.2%}",
+                    f"Assignment Rate: {len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.2%}",
+                ]
+            )
 
         if summarize_trades:
             trade_summary = "\n=====================TRADES========================\n"
@@ -662,29 +716,31 @@ class BacktestResults:
             for trade in self.trades:
                 # Extract trade metrics
                 metrics = trade.get_metrics()
-                quantity = metrics.get('quantity', 0)
-                trade_type = metrics.get('type', 'unknown').lower()
-                ticker = metrics.get('ticker', 'UNKNOWN')
-                entry_time = metrics.get('entry_time')
-                exit_time = metrics.get('exit_time')
-                entry_price = metrics.get('entry_price', 0.0)
-                exit_price = metrics.get('exit_price', 0.0)
-                pnl = metrics.get('pnl', 0.0)
-                assignment = metrics.get('assignment', False)
-                exercised = metrics.get('exercised', False)
-                expiration = metrics.get('expiration', None)
-                option_type = str(metrics.get('option_type', None))
-                strike = metrics.get('strike', 0.0)
-                option_ticker = metrics.get('option_ticker', '')
-                duration_hours = metrics.get('duration_hours', 0)
+                quantity = metrics.get("quantity", 0)
+                trade_type = metrics.get("type", "unknown").lower()
+                ticker = metrics.get("ticker", "UNKNOWN")
+                entry_time = metrics.get("entry_time")
+                exit_time = metrics.get("exit_time")
+                entry_price = metrics.get("entry_price", 0.0)
+                exit_price = metrics.get("exit_price", 0.0)
+                pnl = metrics.get("pnl", 0.0)
+                assignment = metrics.get("assignment", False)
+                exercised = metrics.get("exercised", False)
+                expiration = metrics.get("expiration", None)
+                option_type = str(metrics.get("option_type", None))
+                strike = metrics.get("strike", 0.0)
+                option_ticker = metrics.get("option_ticker", "")
+                duration_hours = metrics.get("duration_hours", 0)
 
                 # Determine if the trade is an option or shares
-                is_option = trade_type == 'option'
+                is_option = trade_type == "option"
 
                 # Format the instrument description
                 if is_option:
-                    option_side = 'long' if quantity > 0 else 'short'
-                    option_kind = option_type.replace('_option', '') if option_type else 'unknown'
+                    option_side = "long" if quantity > 0 else "short"
+                    option_kind = (
+                        option_type.replace("_option", "") if option_type else "unknown"
+                    )
                     instrument = f"{ticker} {option_side} {option_kind} option"
                     dte = self._extract_dte(entry_time, option_ticker)
                     instrument += f" (Strike: ${strike:.2f}, Expiry: {dte} days)"
@@ -697,10 +753,10 @@ class BacktestResults:
                         return "N/A"
                     ts = pd.Timestamp(timestamp)
                     if ts.tzinfo is None:
-                        ts = ts.tz_localize('UTC').tz_convert('US/Eastern')
+                        ts = ts.tz_localize("UTC").tz_convert("US/Eastern")
                     else:
-                        ts = ts.tz_convert('US/Eastern')
-                    return ts.strftime('%Y-%m-%d %H:%M')
+                        ts = ts.tz_convert("US/Eastern")
+                    return ts.strftime("%Y-%m-%d %H:%M")
 
                 formatted_entry_time = format_time(entry_time)
                 formatted_exit_time = format_time(exit_time) if exit_time else "N/A"
@@ -720,7 +776,9 @@ class BacktestResults:
                     if is_option:
                         if quantity < 0:  # Short option
                             if assignment:
-                                exit_action = f"expired ITM and was assigned at ${strike:.2f}"
+                                exit_action = (
+                                    f"expired ITM and was assigned at ${strike:.2f}"
+                                )
                             else:
                                 exit_action = "expired OTM"
                             trade_desc += f"{exit_action} on {formatted_exit_time} with a {pnl_status} of {pnl_str}"
@@ -763,52 +821,75 @@ class BacktestResults:
         options_trades = [t for t in self.trades if t.instrument.is_option]
         option_pnls = [t.pnl for t in options_trades]
 
-        total_invested = sum([
-            t.quantity * t.entry_price * t.instrument.get_multiplier()
-            for t in self.trades if t.quantity > 0])
-        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested if total_invested != 0 else 0
+        total_invested = sum(
+            [
+                t.quantity * t.entry_price * t.instrument.get_multiplier()
+                for t in self.trades
+                if t.quantity > 0
+            ]
+        )
+        return_on_invested_capital = (
+            sum([t.pnl for t in self.trades]) / total_invested
+            if total_invested != 0
+            else 0
+        )
 
         # Calculate options metrics if applicable
         options_metrics = {}
         if options_trades:
-            calls = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.CALL_OPTION]
-            puts = [t for t in options_trades if t.instrument.instrument_type == InstrumentType.PUT_OPTION]
+            calls = [
+                t
+                for t in options_trades
+                if t.instrument.instrument_type == InstrumentType.CALL_OPTION
+            ]
+            puts = [
+                t
+                for t in options_trades
+                if t.instrument.instrument_type == InstrumentType.PUT_OPTION
+            ]
             option_pnls = [t.pnl for t in options_trades]
-            options_metrics.update({
-                'Calls/Puts': f"{len(calls)}/{len(puts)}",
-                'Option P&L': f"${sum(option_pnls):,.2f}",
-                'Option Win Rate': f"{len([p for p in option_pnls if p > 0])/len(option_pnls):.1%}",
-                'Assignment Rate': f"{len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.1%}",
-                'Avg Option Duration': f"{np.mean([t.duration_hours for t in options_trades]):.1f}h"
-            })
+            options_metrics.update(
+                {
+                    "Calls/Puts": f"{len(calls)}/{len(puts)}",
+                    "Option P&L": f"${sum(option_pnls):,.2f}",
+                    "Option Win Rate": f"{len([p for p in option_pnls if p > 0])/len(option_pnls):.1%}",
+                    "Assignment Rate": f"{len([t for t in options_trades if getattr(t, 'assignment', False)])/len(options_trades):.1%}",
+                    "Avg Option Duration": f"{np.mean([t.duration_hours for t in options_trades]):.1f}h",
+                }
+            )
 
         # Prepare summary data
         metrics = [
-            ['Final Capital', f"${self.final_capital:,.2f}"],
-            ['Net P&L', f"${self.net_pnl:,.2f}"],
-            ['Total Return', f"{self.net_pnl / self.initial_capital:.1%}"],
-            ['Ann. Return', f"{self.annualized_return:.1%}"],
-            ['ROI', f"{return_on_invested_capital:.1%}"],
-            ['', ''],  # Section header
-            ['Sharpe Ratio', f"{self.sharpe_ratio:.2f}"],
-            ['Sortino Ratio', f"{self.sortino_ratio:.2f}"],
-            ['Max Drawdown', f"{self.max_drawdown:.1%}"],
-            ['VaR (95%)', f"{risk_metrics['var_95']:.1%}"],
-            ['',''],
-            ['Total Trades', str(len(self.trades))],
-            ['Win Rate', f"{self.win_rate:.1%}"],
-            ['Avg Duration', f"{np.mean([t.duration_hours for t in self.trades]):.1f}h"],
-            ['',''],
-            ['Interest', f"+ ${self.total_interest:,.2f}"],
-            ['Dividends', f"+ ${self.total_dividends:,.2f}"],
+            ["Final Capital", f"${self.final_capital:,.2f}"],
+            ["Net P&L", f"${self.net_pnl:,.2f}"],
+            ["Total Return", f"{self.net_pnl / self.initial_capital:.1%}"],
+            ["Ann. Return", f"{self.annualized_return:.1%}"],
+            ["ROI", f"{return_on_invested_capital:.1%}"],
+            ["", ""],  # Section header
+            ["Sharpe Ratio", f"{self.sharpe_ratio:.2f}"],
+            ["Sortino Ratio", f"{self.sortino_ratio:.2f}"],
+            ["Max Drawdown", f"{self.max_drawdown:.1%}"],
+            ["VaR (95%)", f"{risk_metrics['var_95']:.1%}"],
+            ["", ""],
+            ["Total Trades", str(len(self.trades))],
+            ["Win Rate", f"{self.win_rate:.1%}"],
+            [
+                "Avg Duration",
+                f"{np.mean([t.duration_hours for t in self.trades]):.1f}h",
+            ],
+            ["", ""],
+            ["Interest", f"+ ${self.total_interest:,.2f}"],
+            ["Dividends", f"+ ${self.total_dividends:,.2f}"],
         ]
 
         # Add options metrics if present
         if options_metrics:
-            metrics.extend([
-                ['', ''],  # Spacing
-                ['Options', ''],  # Section header
-            ])
+            metrics.extend(
+                [
+                    ["", ""],  # Spacing
+                    ["Options", ""],  # Section header
+                ]
+            )
             metrics.extend([[k, v] for k, v in options_metrics.items()])
 
         return metrics
@@ -817,23 +898,25 @@ class BacktestResults:
     def calculate(engine) -> "BacktestResults":
         """Calculate comprehensive backtest results."""
         # Convert equity curve to dataframe
-        equity_curve_dict = {'timestamp': [], 'equity': []}
+        equity_curve_dict = {"timestamp": [], "equity": []}
         for timestamp, equity in engine.portfolio.equity_curve:
-            equity_curve_dict['timestamp'].append(timestamp)
-            equity_curve_dict['equity'].append(equity)
+            equity_curve_dict["timestamp"].append(timestamp)
+            equity_curve_dict["equity"].append(equity)
 
-        equity_df = pd.DataFrame.from_dict(equity_curve_dict).set_index('timestamp')
-        equity_df['returns'] = equity_df['equity'].pct_change()
-        daily_returns = equity_df['returns'].dropna()
+        equity_df = pd.DataFrame.from_dict(equity_curve_dict).set_index("timestamp")
+        equity_df["returns"] = equity_df["equity"].pct_change()
+        daily_returns = equity_df["returns"].dropna()
 
         # Calculate metrics using the new formulae module
-        return_metrics = calculate_return_metrics(pd.Series(equity_df['equity']))
-        drawdown_metrics = calculate_drawdown_metrics(pd.Series(equity_df['equity']))
+        return_metrics = calculate_return_metrics(pd.Series(equity_df["equity"]))
+        drawdown_metrics = calculate_drawdown_metrics(pd.Series(equity_df["equity"]))
         risk_metrics = calculate_risk_metrics(pd.Series(daily_returns))
 
         # Separate trades by type
         options_trades = [t for t in engine.portfolio.trades if t.instrument.is_option]
-        stock_trades = [t for t in engine.portfolio.trades if not t.instrument.is_option]
+        stock_trades = [
+            t for t in engine.portfolio.trades if not t.instrument.is_option
+        ]
 
         # Calculate trade metrics
         options_metrics = calculate_trade_metrics(options_trades)
@@ -853,11 +936,20 @@ class BacktestResults:
         total_interest_payouts = sum(engine.interest_payouts)
 
         # Calculate realized P&L
-        realized_pnl = sum(t.pnl for t in engine.portfolio.trades)  # Already includes commissions
+        realized_pnl = sum(
+            t.pnl for t in engine.portfolio.trades
+        )  # Already includes commissions
 
         # Realized P&L already includes transaction costs
-        expected_final_capital = engine.initial_capital + realized_pnl + total_dividend_payouts + total_interest_payouts
-        actual_final_capital = engine.portfolio.cash + engine.portfolio.get_position_value()
+        expected_final_capital = (
+            engine.initial_capital
+            + realized_pnl
+            + total_dividend_payouts
+            + total_interest_payouts
+        )
+        actual_final_capital = (
+            engine.portfolio.cash + engine.portfolio.get_position_value()
+        )
 
         # Compare with actual final capital
         if not np.isclose(expected_final_capital, actual_final_capital, atol=1e-2):
@@ -876,43 +968,48 @@ class BacktestResults:
 
         # Compile results
         results = {
-            'initial_capital': engine.initial_capital,
-            'final_capital': actual_final_capital,
-            'net_pnl': actual_final_capital - engine.initial_capital,
+            "initial_capital": engine.initial_capital,
+            "final_capital": actual_final_capital,
+            "net_pnl": actual_final_capital - engine.initial_capital,
             **return_metrics,
             **drawdown_metrics,
-            'options_metrics': options_metrics,
-            'stock_metrics': stock_metrics,
-            'transaction_costs': {
-                'total_commission': total_commission,
-                'total_slippage': total_slippage,
-                'avg_commission_per_trade': (
+            "options_metrics": options_metrics,
+            "stock_metrics": stock_metrics,
+            "transaction_costs": {
+                "total_commission": total_commission,
+                "total_slippage": total_slippage,
+                "avg_commission_per_trade": (
                     total_commission / len(engine.portfolio.trades)
-                    if engine.portfolio.trades else 0
+                    if engine.portfolio.trades
+                    else 0
                 ),
-                'avg_slippage_per_trade': (
+                "avg_slippage_per_trade": (
                     total_slippage / len(engine.portfolio.trades)
-                    if engine.portfolio.trades else 0
+                    if engine.portfolio.trades
+                    else 0
                 ),
-                'cost_as_pct_aum': (
+                "cost_as_pct_aum": (
                     (total_commission + total_slippage) / engine.initial_capital
-                    if engine.initial_capital > 0 else 0
-                )
+                    if engine.initial_capital > 0
+                    else 0
+                ),
             },
-            'execution_metrics': {
-                'fill_ratio': np.mean(engine.fill_ratios) if engine.fill_ratios else 0,
-                'daily_metrics': {
-                    'avg_slippage': np.mean(engine.daily_metrics['slippage']),
-                    'avg_commission': np.mean(engine.daily_metrics['commissions']),
-                    'avg_fill_ratio': np.mean(engine.daily_metrics['fills']),
-                    'avg_volume_participation': np.mean(engine.daily_metrics['volume_participation'])
-                }
+            "execution_metrics": {
+                "fill_ratio": np.mean(engine.fill_ratios) if engine.fill_ratios else 0,
+                "daily_metrics": {
+                    "avg_slippage": np.mean(engine.daily_metrics["slippage"]),
+                    "avg_commission": np.mean(engine.daily_metrics["commissions"]),
+                    "avg_fill_ratio": np.mean(engine.daily_metrics["fills"]),
+                    "avg_volume_participation": np.mean(
+                        engine.daily_metrics["volume_participation"]
+                    ),
+                },
             },
-            'equity_curve': equity_df,
-            'daily_returns': daily_returns,
-            'trade_count': len(engine.portfolio.trades),
-            'total_interest': total_interest_payouts,
-            'total_dividends': total_dividend_payouts,
+            "equity_curve": equity_df,
+            "daily_returns": daily_returns,
+            "trade_count": len(engine.portfolio.trades),
+            "total_interest": total_interest_payouts,
+            "total_dividends": total_dividend_payouts,
         }
 
         results.update(risk_metrics)
@@ -920,22 +1017,22 @@ class BacktestResults:
         return BacktestResults(
             strategy_name=engine.strategy.name,
             initial_capital=engine.initial_capital,
-            final_capital=results['final_capital'],
-            total_return=results['total_return'],
-            annualized_return=results['annualized_return'],
-            annualized_volatility=results['annualized_volatility'],
-            sharpe_ratio=results['sharpe_ratio'],
-            sortino_ratio=results['sortino_ratio'],
-            max_drawdown=results['max_drawdown'],
-            options_metrics=results['options_metrics'],
-            stock_metrics=results['stock_metrics'],
-            transaction_costs=results['transaction_costs'],
-            execution_metrics=results['execution_metrics'],
-            equity_curve=results['equity_curve'],
-            drawdown_series=results['drawdown_series'],
-            daily_returns=results['daily_returns'],
-            net_pnl=results['net_pnl'],
+            final_capital=results["final_capital"],
+            total_return=results["total_return"],
+            annualized_return=results["annualized_return"],
+            annualized_volatility=results["annualized_volatility"],
+            sharpe_ratio=results["sharpe_ratio"],
+            sortino_ratio=results["sortino_ratio"],
+            max_drawdown=results["max_drawdown"],
+            options_metrics=results["options_metrics"],
+            stock_metrics=results["stock_metrics"],
+            transaction_costs=results["transaction_costs"],
+            execution_metrics=results["execution_metrics"],
+            equity_curve=results["equity_curve"],
+            drawdown_series=results["drawdown_series"],
+            daily_returns=results["daily_returns"],
+            net_pnl=results["net_pnl"],
             trades=engine.portfolio.trades,
-            total_interest=results['total_interest'],
-            total_dividends=results['total_dividends']
+            total_interest=results["total_interest"],
+            total_dividends=results["total_dividends"],
         )

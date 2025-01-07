@@ -10,7 +10,7 @@ setup(
         "numpy>=1.22.0",
         "pytz",
         "scipy>=1.9.0",
-        "fredapi>=0.5.2"
+        "fredapi>=0.5.2",
     ],
     extras_require={
         "dev": [
@@ -19,5 +19,5 @@ setup(
             "black>=22.0.0",
             "isort>=5.10.0",
         ]
-    }
+    },
 )

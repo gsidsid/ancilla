@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 
+
 @dataclass
 class OptionData:
     """
@@ -25,6 +26,7 @@ class OptionData:
         open_interest: Open interest (optional)
         last_trade: Last trade datetime (optional)
     """
+
     ticker: str
     strike: float
     expiration: datetime

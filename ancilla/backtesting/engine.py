@@ -11,14 +11,13 @@ import logging
 from ancilla.utils.logging import BacktesterLogger
 from ancilla.providers import PolygonDataProvider, FREDDataProvider
 from ancilla.models import Instrument, Option, Stock, InstrumentType, MarketDataDict
-from ancilla.backtesting.configuration import (
-    Broker, CommissionConfig, SlippageConfig
-)
+from ancilla.backtesting.configuration import Broker, CommissionConfig, SlippageConfig
 
 if TYPE_CHECKING:
     from ancilla.backtesting import Strategy, BacktestResults
 
 dotenv.load_dotenv()
+
 
 class Backtest:
     """Backtesting engine."""
@@ -30,26 +29,80 @@ class Backtest:
         start_date: datetime = datetime.now() - timedelta(days=365),
         end_date: datetime = datetime.now(),
         tickers: List[str] = ["SPY"],
-        frequency: str = "30min", # realistically either 30min or 1hour
+        frequency: str = "30min",  # realistically either 30min or 1hour
         enable_naked_options: bool = True,
-        commission_config: Optional[CommissionConfig] = None,
-        slippage_config: Optional[SlippageConfig] = None,
+        commission_config: CommissionConfig = CommissionConfig(),
+        slippage_config: SlippageConfig = SlippageConfig(),
         deterministic_fill: bool = False,
-        name: str = "backtesting"
-    ):
+        name: str = "backtesting",
+    ) -> None:
+        """Initialize a new backtesting instance.
+
+        Args:
+            strategy (Strategy): Strategy instance to be backtested (must be a subclass of ancilla.backtesting.Strategy).
+            initial_capital (float, optional): Starting capital in base currency (USD). Defaults to 100000.0.
+            start_date (datetime, optional): Backtest period start date. Defaults to 1 year ago.
+            end_date (datetime, optional): Backtest period end date. Defaults to current date.
+            tickers (List[str], optional): List of asset symbols to trade. Defaults to ["SPY"].
+            frequency (str, optional): Data sampling frequency, either "30min" or "1hour". Defaults to "30min".
+            enable_naked_options (bool, optional): Allow trading options without holding underlying. Defaults to True.
+            commission_config (ancilla.backtesting.configuration.CommissionConfig): Trading fee structure.
+            slippage_config (ancilla.backtesting.configuration.SlippageConfig): Price slippage model.
+            deterministic_fill (bool, optional): If True, ignores volume based fill probabilities and reliably fills orders. Defaults to False.
+            name (str, optional): Identifier for backtest engine logs. Defaults to "backtesting".
+        """
         from ancilla.backtesting import Portfolio
+
+        if not isinstance(commission_config, CommissionConfig):
+            raise ValueError(
+                "CommissionConfig must be an instance of ancilla.backtesting.configuration.CommissionConfig"
+            )
+        if not isinstance(slippage_config, SlippageConfig):
+            raise ValueError(
+                "SlippageConfig must be an instance of ancilla.backtesting.configuration.SlippageConfig"
+            )
+        if not isinstance(start_date, datetime) or not isinstance(end_date, datetime):
+            raise ValueError("start_date and end_date must be datetime objects")
+        if start_date >= end_date:
+            raise ValueError("start_date must be before end_date")
+        if frequency not in [
+            "1min",
+            "5min",
+            "15min",
+            "30min",
+            "1hour",
+            "2hour",
+            "1day",
+        ]:
+            raise ValueError(
+                "Invalid frequency. Must be one of: 1min, 5min, 15min, 30min, 1hour, 2hour, 1day"
+            )
+        if initial_capital <= 0:
+            raise ValueError("initial_capital must be a positive number")
+        if os.getenv("POLYGON_API_KEY") is None:
+            raise ValueError(
+                "POLYGON_API_KEY environment variable not set. Get a key at https://polygon.io/"
+            )
+        if os.getenv("FRED_API_KEY") is None:
+            raise ValueError(
+                "FRED_API_KEY environment variable not set. Get a key at https://fred.stlouisfed.org/"
+            )
 
         name = f"{strategy.name}_orders"
         self.portfolio = Portfolio(name, initial_capital, enable_naked_options)
         self.initial_capital = initial_capital
-        self.data_provider = PolygonDataProvider(api_key=os.getenv("POLYGON_API_KEY") or "your-polygon-io-api-key")
+        self.data_provider = PolygonDataProvider(
+            api_key=os.getenv("POLYGON_API_KEY") or "your-polygon-io-api-key"
+        )
         self.strategy = strategy
         self.frequency = frequency
 
-        fred_provider = FREDDataProvider(api_key=os.getenv("FRED_API_KEY") or "your-fred-api-key")
+        fred_provider = FREDDataProvider(
+            api_key=os.getenv("FRED_API_KEY") or "your-fred-api-key"
+        )
         self.risk_free_rates = fred_provider.get_fed_funds_rate(
             start_date=start_date - timedelta(days=1),
-            end_date=end_date + timedelta(days=1)
+            end_date=end_date + timedelta(days=1),
         )
 
         self.risk_free_rate = 0.0
@@ -60,8 +113,12 @@ class Backtest:
         self.logger = BacktesterLogger().get_logger()
 
         # Set timezone to Eastern Time
-        start_date = start_date.astimezone(pytz.timezone("US/Eastern")).replace(hour=9, minute=30, second=0, microsecond=0)
-        end_date = end_date.astimezone(pytz.timezone("US/Eastern")).replace(hour=16, minute=0, second=0, microsecond=0)
+        start_date = start_date.astimezone(pytz.timezone("US/Eastern")).replace(
+            hour=9, minute=30, second=0, microsecond=0
+        )
+        end_date = end_date.astimezone(pytz.timezone("US/Eastern")).replace(
+            hour=16, minute=0, second=0, microsecond=0
+        )
 
         self.start_date = start_date
         self.end_date = end_date
@@ -83,7 +140,9 @@ class Backtest:
         self.fill_ratios = []  # Track fill rates
         self.slippage_costs = []  # Track slippage
         self.commission_costs = []  # Track commissions
-        self.total_transaction_costs = [] # Track total transaction costs for reconciliation
+        self.total_transaction_costs = (
+            []
+        )  # Track total transaction costs for reconciliation
 
         # Payout analytics
         self.dividend_payouts = []  # Track dividend payouts
@@ -94,10 +153,10 @@ class Backtest:
 
         # Cache for daily metrics
         self.daily_metrics = {
-            'slippage': [],
-            'commissions': [],
-            'fills': [],
-            'volume_participation': []
+            "slippage": [],
+            "commissions": [],
+            "fills": [],
+            "volume_participation": [],
         }
 
     def _execute_instrument_order(
@@ -105,22 +164,28 @@ class Backtest:
         instrument: Instrument,
         quantity: int,
         timestamp: datetime,
-        is_assignment: bool = False
+        is_assignment: bool = False,
     ) -> bool:
         """
         Internal method to execute orders with broker simulation.
         """
         # Get latest market data
-        ticker = instrument.format_option_ticker() if instrument.is_option else instrument.underlying_ticker
+        ticker = (
+            instrument.format_option_ticker()
+            if instrument.is_option
+            else instrument.underlying_ticker
+        )
         week_end = timestamp + timedelta(days=(4 - timestamp.weekday()) % 7)
         bars = self.data_provider.get_intraday_bars(
             ticker=ticker,
             start_date=timestamp.astimezone(pytz.UTC),
             end_date=week_end.astimezone(pytz.UTC),
-            interval=self.frequency
+            interval=self.frequency,
         )
         if bars is None or bars.empty:
-            self.logger.warning(f"No bars found for {instrument.ticker} on {timestamp}. It is likely not trading currently.")
+            self.logger.warning(
+                f"No bars found for {instrument.ticker} on {timestamp}. It is likely not trading currently."
+            )
             return False
 
         # Update weekly data and tickers if ordering a new option or equity
@@ -134,7 +199,7 @@ class Backtest:
         self.market_data[ticker] = data
 
         # Get target price
-        price = data.get('open', 0)
+        price = data.get("open", 0)
         if price is None:
             self.logger.warning(f"No price data for {instrument.ticker}")
             return False
@@ -145,12 +210,13 @@ class Backtest:
             base_price=price,
             quantity=quantity,
             market_data=data,
-            asset_type='option' if instrument.is_option else 'stock'
+            asset_type="option" if instrument.is_option else "stock",
         )
         if not execution_details or execution_details.adjusted_quantity == 0:
             self.logger.warning(
-                f"Failed to calculate execution details for order ({ticker}), likely due to low volume. Attempted: {instrument.ticker if not instrument.is_option else instrument.format_option_ticker()}, {quantity} @ {price}" + "\n" +
-                f"\t  Market data: {data}"
+                f"Failed to calculate execution details for order ({ticker}), likely due to low volume. Attempted: {instrument.ticker if not instrument.is_option else instrument.format_option_ticker()}, {quantity} @ {price}"
+                + "\n"
+                + f"\t  Market data: {data}"
             )
             return False
 
@@ -168,34 +234,35 @@ class Backtest:
         quantity = execution_details.adjusted_quantity
         position_exists = ticker in self.portfolio.positions
         position_args = {
-            'price': execution_details.execution_price,
-            'timestamp': timestamp,
-            'transaction_costs': execution_details.total_transaction_costs
+            "price": execution_details.execution_price,
+            "timestamp": timestamp,
+            "transaction_costs": execution_details.total_transaction_costs,
         }
         if position_exists:
             # Close existing position
             success = self.portfolio.close_position(
-                instrument=self.portfolio.positions[ticker].instrument,
-                **position_args
+                instrument=self.portfolio.positions[ticker].instrument, **position_args
             )
         else:
             # Open new position
             success = self.portfolio.open_position(
-                instrument=instrument,
-                quantity=quantity,
-                **position_args
+                instrument=instrument, quantity=quantity, **position_args
             )
 
         # Track trade metrics
         if success:
-            self.daily_metrics['volume_participation'].append(execution_details.participation_rate)
-            self.daily_metrics['fills'].append(1.0)
-            self.daily_metrics['slippage'].append(execution_details.price_impact)
-            self.daily_metrics['commissions'].append(execution_details.commission)
+            self.daily_metrics["volume_participation"].append(
+                execution_details.participation_rate
+            )
+            self.daily_metrics["fills"].append(1.0)
+            self.daily_metrics["slippage"].append(execution_details.price_impact)
+            self.daily_metrics["commissions"].append(execution_details.commission)
             self.fill_ratios.append(fill_probability)
             self.slippage_costs.append(execution_details.slippage)
             self.commission_costs.append(execution_details.commission)
-            self.total_transaction_costs.append(execution_details.total_transaction_costs)
+            self.total_transaction_costs.append(
+                execution_details.total_transaction_costs
+            )
             self.logger.info(
                 f"Order executed: {ticker} {quantity} @ {execution_details.execution_price:.2f}\n"
                 f"  Base price: ${price:.2f}\n"
@@ -211,21 +278,20 @@ class Backtest:
         current_date = self.start_date
         last_market_close = self.start_date
         frequency_delta = {
-            '1min': timedelta(minutes=1),
-            '5min': timedelta(minutes=5),
-            '15min': timedelta(minutes=15),
-            '30min': timedelta(minutes=30),
-            '1hour': timedelta(hours=1),
-            '2hour': timedelta(hours=2),
-            '1day': timedelta(days=1)
+            "1min": timedelta(minutes=1),
+            "5min": timedelta(minutes=5),
+            "15min": timedelta(minutes=15),
+            "30min": timedelta(minutes=30),
+            "1hour": timedelta(hours=1),
+            "2hour": timedelta(hours=2),
+            "1day": timedelta(days=1),
         }[self.frequency]
 
         while current_date <= self.end_date:
             # Find the end of the current week
             days_until_friday = (4 - current_date.weekday()) % 7
             week_end = min(
-                current_date + timedelta(days=days_until_friday),
-                self.end_date
+                current_date + timedelta(days=days_until_friday), self.end_date
             )
 
             # Update options tickers
@@ -238,7 +304,7 @@ class Backtest:
                     ticker=ticker,
                     start_date=current_date.astimezone(pytz.UTC),
                     end_date=(week_end + timedelta(days=1)).astimezone(pytz.UTC),
-                    interval=self.frequency
+                    interval=self.frequency,
                 )
                 if bars is not None and not bars.empty:
                     self.weekly_data[ticker] = bars
@@ -249,8 +315,8 @@ class Backtest:
                 if not market_hours:
                     current_date += timedelta(days=1)
                     continue
-                market_open = market_hours['market_open']
-                market_close = market_hours['market_close']
+                market_open = market_hours["market_open"]
+                market_close = market_hours["market_close"]
                 current_time = market_open
 
                 while current_time <= market_close:
@@ -260,50 +326,61 @@ class Backtest:
                     # Find current bars in weekly pull for each ticker
                     for ticker in self.tickers:
                         bars = self.weekly_data[ticker]
-                        window_start = (current_time - frequency_delta).astimezone(pytz.UTC)
+                        window_start = (current_time - frequency_delta).astimezone(
+                            pytz.UTC
+                        )
                         window_end = (current_time).astimezone(pytz.UTC)
                         window_bars = bars[
-                            (bars.index > window_start) &
-                            (bars.index <= window_end)
+                            (bars.index > window_start) & (bars.index <= window_end)
                         ]
                         if window_bars.empty:
                             continue
                         self.market_data[ticker] = window_bars.iloc[0].to_dict()
-                        self.market_data[ticker]['timestamp'] = current_time
+                        self.market_data[ticker]["timestamp"] = current_time
 
                     # Apply dividend adjustments for the current time
                     # This needs to happen right after market data is updated but before strategy execution
                     self._adjust_for_dividends(current_time, self.market_data)
 
                     # Legible strategy progress display
-                    eastern_time_12_hour_format = current_time.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M %p')
+                    eastern_time_12_hour_format = current_time.astimezone(
+                        pytz.timezone("US/Eastern")
+                    ).strftime("%Y-%m-%d %I:%M %p")
                     strategy_formatter = logging.Formatter(
                         fmt=f"ancilla.{self.strategy.name} - [{eastern_time_12_hour_format}] - %(levelname)s - %(message)s"
                     )
                     self.strategy.logger.handlers[0].setFormatter(strategy_formatter)
                     self.strategy.logger.handlers[1].setFormatter(strategy_formatter)
-                    current_line = "\r" + "ancilla." + self.strategy.name + " – [" + eastern_time_12_hour_format + "]" + "\033[K"
-                    print(current_line, end='\r')
+                    current_line = (
+                        "\r"
+                        + "ancilla."
+                        + self.strategy.name
+                        + " – ["
+                        + eastern_time_12_hour_format
+                        + "]"
+                        + "\033[K"
+                    )
+                    print(current_line, end="\r")
 
                     # Execute backtest strategy with dividend-adjusted market data
                     market_data_with_indicators = MarketDataDict(
                         self.market_data,
                         self.market_history,
-                        risk_free_rate=float(self.risk_free_rate / 100.0)
+                        risk_free_rate=float(self.risk_free_rate / 100.0),
                     )
                     self.strategy.on_data(current_time, market_data_with_indicators)
                     for ticker in self.market_data:
                         if ticker not in self.market_history:
                             self.market_history[ticker] = []
-                        self.market_data[ticker]['timestamp'] = current_time
+                        self.market_data[ticker]["timestamp"] = current_time
                         self.market_history[ticker].append(self.market_data[ticker])
 
                     # Update portfolio equity curve prices as of strategy execution
                     # Note: These prices are already dividend-adjusted
                     current_prices = {}
                     for ticker, data in self.market_data.items():
-                        if 'close' in data:
-                            current_prices[ticker] = data['close']
+                        if "close" in data:
+                            current_prices[ticker] = data["close"]
                     self.portfolio.update_equity(current_time, current_prices)
 
                     current_time += frequency_delta
@@ -313,11 +390,17 @@ class Backtest:
                 # So there may be hanging expired positions
                 last_market_close = market_close
                 self._process_option_expiration(
-                    current_date, market_close.astimezone(pytz.timezone('US/Eastern')))
+                    current_date, market_close.astimezone(pytz.timezone("US/Eastern"))
+                )
 
                 # If the current day is the last day of the month, payout monthly interest
-                if current_date.day == current_date.replace(day=1).replace(tzinfo=None).date().day:
-                    interest_payout = self.portfolio.payout_interest(float(self.risk_free_rate / 100.0))
+                if (
+                    current_date.day
+                    == current_date.replace(day=1).replace(tzinfo=None).date().day
+                ):
+                    interest_payout = self.portfolio.payout_interest(
+                        float(self.risk_free_rate / 100.0)
+                    )
                     self.interest_payouts.append(interest_payout)
 
                 current_date += timedelta(days=1)
@@ -327,33 +410,39 @@ class Backtest:
 
         # Calculate and return results
         from ancilla.backtesting.results import BacktestResults
+
         results = BacktestResults.calculate(self)
         self.logger.info(results.summary())
         return results
 
-    def _process_option_expiration(self, current_date: datetime, expiration_time: datetime):
+    def _process_option_expiration(
+        self, current_date: datetime, expiration_time: datetime
+    ):
         """
         Handle option expiration and assignments.
         """
         option_positions = [
-                pos for pos in self.portfolio.positions.values()
-                if (isinstance(pos.instrument, Option) and
-                    pos.instrument.expiration.date() == current_date.date() and
-                    pos.instrument.expiration.year == current_date.year)
-            ]
+            pos
+            for pos in self.portfolio.positions.values()
+            if (
+                isinstance(pos.instrument, Option)
+                and pos.instrument.expiration.date() == current_date.date()
+                and pos.instrument.expiration.year == current_date.year
+            )
+        ]
         if not option_positions:
             return
 
         is_expiration_time = (
-            expiration_time.hour == 16 and
-            expiration_time.minute == 0 and
-            expiration_time.weekday() == 4  # Friday
+            expiration_time.hour == 16
+            and expiration_time.minute == 0
+            and expiration_time.weekday() == 4  # Friday
         )
         if not is_expiration_time:
             return
 
         for position in option_positions:
-            option: Option = position.instrument # type: ignore
+            option: Option = position.instrument  # type: ignore
             ticker = option.format_option_ticker()
             underlying_ticker = option.underlying_ticker
 
@@ -363,15 +452,17 @@ class Backtest:
                 ticker=underlying_ticker,
                 start_date=expiry_close,
                 end_date=expiry_close + timedelta(minutes=1),
-                interval=self.frequency
+                interval=self.frequency,
             )
 
             if underlying_data is None or underlying_data.empty:
                 self.logger.warning(f"No underlying data found for {underlying_ticker}")
                 continue
 
-            underlying_close = underlying_data.iloc[-1]['close']
-            self.logger.info(f"Processing expiration for {ticker} with underlying at ${underlying_close:.2f}")
+            underlying_close = underlying_data.iloc[-1]["close"]
+            self.logger.info(
+                f"Processing expiration for {ticker} with underlying at ${underlying_close:.2f}"
+            )
 
             # Calculate intrinsic value
             intrinsic_value = 0.0
@@ -395,7 +486,7 @@ class Backtest:
                         strike_price=option.strike,
                         timestamp=expiration_time,
                         is_call=option.instrument_type == InstrumentType.CALL_OPTION,
-                        broker=self.broker
+                        broker=self.broker,
                     )
                 else:
                     # Long Option Exercise
@@ -406,7 +497,7 @@ class Backtest:
                         timestamp=expiration_time,
                         is_call=option.instrument_type == InstrumentType.CALL_OPTION,
                         intrinsic_value=intrinsic_value,
-                        broker=self.broker
+                        broker=self.broker,
                     )
             else:
                 # Option expires worthless
@@ -417,7 +508,7 @@ class Backtest:
                     price=0.0,  # Option expired worthless
                     timestamp=expiration_time,
                     quantity=position.quantity,
-                    transaction_costs=0.0
+                    transaction_costs=0.0,
                 )
 
             if ticker not in self.portfolio.positions:
@@ -437,21 +528,23 @@ class Backtest:
             self.logger.info(f"  {t}: {p.quantity} units @ {p.entry_price}")
         for ticker, position in positions_to_close:
             closing_time = current_date.replace(hour=16, minute=0, second=0)
-            closing_price = self.market_data[ticker]['close']
+            closing_price = self.market_data[ticker]["close"]
 
             # Close the position using last trading hour timestamp
             success = self.portfolio.close_position(
                 instrument=position.instrument,
                 price=closing_price,
-                timestamp=closing_time, # type: ignore
+                timestamp=closing_time,  # type: ignore
                 transaction_costs=self.broker.calculate_commission(
                     closing_price,
                     position.quantity,
-                    'option' if position.instrument.is_option else 'stock'
-                )
+                    "option" if position.instrument.is_option else "stock",
+                ),
             )
             if success:
-                self.logger.info(f"Automatically closed position in {ticker} @ {closing_price:.2f}")
+                self.logger.info(
+                    f"Automatically closed position in {ticker} @ {closing_price:.2f}"
+                )
             else:
                 self.logger.error(f"Failed to close position in {ticker}")
 
@@ -488,7 +581,9 @@ class Backtest:
 
         # Ensure current_date is a datetime and timezone-aware
         if not isinstance(current_date, datetime):
-            raise TypeError(f"current_date must be a datetime object, got {type(current_date)}")
+            raise TypeError(
+                f"current_date must be a datetime object, got {type(current_date)}"
+            )
 
         if current_date.tzinfo is None:
             current_date = current_date.replace(tzinfo=pytz.UTC)
@@ -519,17 +614,16 @@ class Backtest:
                     active_tickers.append(ticker)
 
             except (ValueError, AttributeError) as e:
-                self.logger.warning(f"Error processing option ticker {ticker}: {str(e)}")
+                self.logger.warning(
+                    f"Error processing option ticker {ticker}: {str(e)}"
+                )
                 continue
 
         # Ensure the tickers are de-duplicated
         return list(set(active_tickers))
 
     def buy_stock(
-        self,
-        ticker: str,
-        quantity: int,
-        _is_assignment: bool = False
+        self, ticker: str, quantity: int, _is_assignment: bool = False
     ) -> bool:
         """
         Buy stocks.
@@ -543,14 +637,11 @@ class Backtest:
             instrument=instrument,
             quantity=abs(quantity),  # Ensure positive
             timestamp=self.last_timestamp,
-            is_assignment=_is_assignment
+            is_assignment=_is_assignment,
         )
 
     def sell_stock(
-        self,
-        ticker: str,
-        quantity: int,
-        _is_assignment: bool = False
+        self, ticker: str, quantity: int, _is_assignment: bool = False
     ) -> bool:
         """
         Sell stocks.
@@ -564,14 +655,10 @@ class Backtest:
             instrument=instrument,
             quantity=-abs(quantity),  # Ensure negative
             timestamp=self.last_timestamp,
-            is_assignment=_is_assignment
+            is_assignment=_is_assignment,
         )
 
-    def buy_option(
-        self,
-        option: Option,
-        quantity: int
-    ) -> bool:
+    def buy_option(self, option: Option, quantity: int) -> bool:
         """
         Buy options.
 
@@ -588,16 +675,10 @@ class Backtest:
             self.tickers.append(option.format_option_ticker())
 
         return self._execute_instrument_order(
-            instrument=option,
-            quantity=abs(quantity),
-            timestamp=self.last_timestamp
+            instrument=option, quantity=abs(quantity), timestamp=self.last_timestamp
         )
 
-    def sell_option(
-        self,
-        option: Option,
-        quantity: int
-    ) -> bool:
+    def sell_option(self, option: Option, quantity: int) -> bool:
         """
         Sell options.
 
@@ -613,9 +694,7 @@ class Backtest:
             self.tickers.append(option.format_option_ticker())
 
         return self._execute_instrument_order(
-            instrument=option,
-            quantity=-abs(quantity),
-            timestamp=self.last_timestamp
+            instrument=option, quantity=-abs(quantity), timestamp=self.last_timestamp
         )
 
     def _validate_option_order(self, option: Option, timestamp: datetime) -> bool:
@@ -638,7 +717,9 @@ class Backtest:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error validating option order {option.ticker}: {str(e)}")
+            self.logger.error(
+                f"Error validating option order {option.ticker}: {str(e)}"
+            )
             return False
 
     def _fetch_dividend_data(self):
@@ -649,8 +730,8 @@ class Backtest:
         dividend_data = {}
 
         # Format dates for Polygon API (YYYY-MM-DD)
-        formatted_start = self.start_date.strftime('%Y-%m-%d')
-        formatted_end = self.end_date.strftime('%Y-%m-%d')
+        formatted_start = self.start_date.strftime("%Y-%m-%d")
+        formatted_end = self.end_date.strftime("%Y-%m-%d")
 
         for ticker in self.tickers:
             # Skip option tickers
@@ -658,9 +739,7 @@ class Backtest:
                 continue
 
             dividends_df = self.data_provider.get_dividends(
-                ticker=ticker,
-                start_date=formatted_start,
-                end_date=formatted_end
+                ticker=ticker, start_date=formatted_start, end_date=formatted_end
             )
 
             if dividends_df is not None and not dividends_df.empty:
@@ -676,7 +755,7 @@ class Backtest:
         """
         current_date = current_time.date()
         # Only apply adjustment at market open UTC (9:30 AM ET)
-        is_market_open = current_time.strftime('%H:%M') == '14:30'
+        is_market_open = current_time.strftime("%H:%M") == "14:30"
         if not is_market_open:
             return
 
@@ -691,18 +770,20 @@ class Backtest:
             # Check if there's a dividend on this date
             if current_date in dividend_dates:
                 dividend_date_str = current_date.isoformat()
-                dividend_amount = dividends[dividends.index.strftime('%Y-%m-%d') == dividend_date_str]['amount'].iloc[0]
+                dividend_amount = dividends[
+                    dividends.index.strftime("%Y-%m-%d") == dividend_date_str
+                ]["amount"].iloc[0]
 
                 # Adjust OHLC prices by adding the dividend amount
                 # This simulates the price drop that occurs on ex-dividend date
-                data['open'] += dividend_amount
-                data['high'] += dividend_amount
-                data['low'] += dividend_amount
-                data['close'] += dividend_amount
+                data["open"] += dividend_amount
+                data["high"] += dividend_amount
+                data["low"] += dividend_amount
+                data["close"] += dividend_amount
 
                 dividend_payout = self.portfolio.payout_dividend(
                     dividend_ticker=ticker,
-                    cash_amount = dividend_amount,
+                    cash_amount=dividend_amount,
                 )
                 self.dividend_payouts.append(dividend_payout)
                 self.logger.debug(
@@ -718,4 +799,6 @@ class Backtest:
             if self.risk_free_rates is not None:
                 self.risk_free_rate = self.risk_free_rates[rate_index]
         except KeyError:
-            self.logger.warning(f"No rate data found for {rate_index} – using last known rate, {self.risk_free_rate}%")
+            self.logger.warning(
+                f"No rate data found for {rate_index} – using last known rate, {self.risk_free_rate}%"
+            )

@@ -13,6 +13,7 @@ from typing import Any, Optional, Union, Dict, Callable
 from functools import wraps
 import threading
 
+
 class CacheBase:
     """Base class defining the caching interface."""
 
@@ -27,6 +28,7 @@ class CacheBase:
 
     def clear(self) -> None:
         raise NotImplementedError
+
 
 class MemoryCache(CacheBase):
     """Thread-safe in-memory cache with TTL."""
@@ -48,18 +50,15 @@ class MemoryCache(CacheBase):
                 return None
 
             entry = self._cache[key]
-            if (datetime.now() - entry['timestamp']).total_seconds() > self._ttl:
+            if (datetime.now() - entry["timestamp"]).total_seconds() > self._ttl:
                 del self._cache[key]
                 return None
 
-            return entry['value']
+            return entry["value"]
 
     def set(self, key: str, value: Any) -> None:
         with self._lock:
-            self._cache[key] = {
-                'value': value,
-                'timestamp': datetime.now()
-            }
+            self._cache[key] = {"value": value, "timestamp": datetime.now()}
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -69,11 +68,16 @@ class MemoryCache(CacheBase):
         with self._lock:
             self._cache.clear()
 
+
 class FileCache(CacheBase):
     """Compressed file-based cache with TTL."""
 
-    def __init__(self, cache_dir: Union[str, Path] = '.ancilla_cache', ttl: int = 86400,
-                 cleanup_interval: int = 3600):
+    def __init__(
+        self,
+        cache_dir: Union[str, Path] = ".ancilla_cache",
+        ttl: int = 86400,
+        cleanup_interval: int = 3600,
+    ):
         """
         Initialize file cache.
 
@@ -97,21 +101,22 @@ class FileCache(CacheBase):
     def _get_cache_path(self, key: str) -> Path:
         """Generate a cache file path from a key."""
         # Use MD5 for filename to handle long keys
-        filename = hashlib.md5(key.encode()).hexdigest() + '.cache.gz'
+        filename = hashlib.md5(key.encode()).hexdigest() + ".cache.gz"
         return self.cache_dir / filename
 
     def _save_to_file(self, path: Path, data: Any) -> None:
         """Save data to a compressed file."""
-        with gzip.open(path, 'wb') as f:
-            pickle.dump({
-                'timestamp': datetime.now(),
-                'data': data
-            }, f, protocol=pickle.HIGHEST_PROTOCOL)
+        with gzip.open(path, "wb") as f:
+            pickle.dump(
+                {"timestamp": datetime.now(), "data": data},
+                f,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
 
     def _load_from_file(self, path: Path) -> Optional[Dict[str, Any]]:
         """Load data from a compressed file."""
         try:
-            with gzip.open(path, 'rb') as f:
+            with gzip.open(path, "rb") as f:
                 return pickle.load(f)
         except (OSError, pickle.PickleError):
             return None
@@ -130,11 +135,11 @@ class FileCache(CacheBase):
             if cache_data is None:
                 return None
 
-            if self._is_expired(cache_data['timestamp']):
+            if self._is_expired(cache_data["timestamp"]):
                 self.delete(key)
                 return None
 
-            return cache_data['data']
+            return cache_data["data"]
 
     def set(self, key: str, value: Any) -> None:
         with self._lock:
@@ -149,16 +154,16 @@ class FileCache(CacheBase):
 
     def clear(self) -> None:
         with self._lock:
-            for cache_file in self.cache_dir.glob('*.cache.gz'):
+            for cache_file in self.cache_dir.glob("*.cache.gz"):
                 cache_file.unlink()
 
     def _cleanup_expired(self) -> None:
         """Remove expired cache entries."""
         with self._lock:
-            for cache_file in self.cache_dir.glob('*.cache.gz'):
+            for cache_file in self.cache_dir.glob("*.cache.gz"):
                 try:
                     cache_data = self._load_from_file(cache_file)
-                    if cache_data and self._is_expired(cache_data['timestamp']):
+                    if cache_data and self._is_expired(cache_data["timestamp"]):
                         cache_file.unlink()
                 except Exception:
                     # If we can't read the file, remove it
@@ -166,6 +171,7 @@ class FileCache(CacheBase):
 
     def _start_cleanup_thread(self) -> None:
         """Start background cleanup thread."""
+
         def cleanup_task():
             while True:
                 # Sleep first to avoid immediate cleanup on initialization
@@ -179,13 +185,17 @@ class FileCache(CacheBase):
         thread = threading.Thread(target=cleanup_task, daemon=True)
         thread.start()
 
+
 class HybridCache:
     """Combined memory and file cache system."""
 
-    def __init__(self, cache_dir: Union[str, Path] = '.ancilla_cache',
-                 memory_ttl: int = 300,
-                 file_ttl: int = 86400,
-                 cleanup_interval: int = 3600):
+    def __init__(
+        self,
+        cache_dir: Union[str, Path] = ".ancilla_cache",
+        memory_ttl: int = 300,
+        file_ttl: int = 86400,
+        cleanup_interval: int = 3600,
+    ):
         """
         Initialize multi-level cache.
 
@@ -197,9 +207,7 @@ class HybridCache:
         """
         self.memory_cache = MemoryCache(ttl=memory_ttl)
         self.file_cache = FileCache(
-            cache_dir=cache_dir,
-            ttl=file_ttl,
-            cleanup_interval=cleanup_interval
+            cache_dir=cache_dir, ttl=file_ttl, cleanup_interval=cleanup_interval
         )
 
     def get(self, key: str) -> Optional[Any]:
@@ -233,9 +241,10 @@ class HybridCache:
         self.memory_cache.clear()
         self.file_cache.clear()
 
-def cached(func: Optional[Callable] = None, *,
-          key_prefix: str = "",
-          ttl: int = 300) -> Callable:
+
+def cached(
+    func: Optional[Callable] = None, *, key_prefix: str = "", ttl: int = 300
+) -> Callable:
     """
     Decorator for caching function results.
 
@@ -248,6 +257,7 @@ def cached(func: Optional[Callable] = None, *,
         def get_daily_bars(ticker: str, start_date: str) -> pd.DataFrame:
             ...
     """
+
     def decorator(f: Callable) -> Callable:
         cache = MemoryCache(ttl=ttl)
 

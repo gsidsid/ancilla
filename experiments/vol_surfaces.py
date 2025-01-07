@@ -7,9 +7,12 @@ import os
 
 dotenv.load_dotenv()
 
+
 def main():
     # Initialize provider and visualizer
-    provider = PolygonDataProvider(api_key=os.getenv("POLYGON_API_KEY") or "your-api-key")
+    provider = PolygonDataProvider(
+        api_key=os.getenv("POLYGON_API_KEY") or "your-api-key"
+    )
     market = MarketVisualizer(provider)
 
     # Define date range
@@ -27,13 +30,14 @@ def main():
         delta_range=(0.1, 0.9),
         frame_duration=100,
         n_interpolated_frames=1,
-        max_workers=16
+        max_workers=16,
     )
 
     if fig is not None:
         fig.show()
     else:
         print("Failed to create animation")
+
 
 if __name__ == "__main__":
     main()

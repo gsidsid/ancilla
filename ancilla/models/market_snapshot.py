@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+
 @dataclass
 class MarketSnapshot:
     """
@@ -18,6 +19,7 @@ class MarketSnapshot:
         volume: Trading volume (optional)
         vwap: Volume-weighted average price (optional)
     """
+
     timestamp: datetime
     price: float
     bid: Optional[float] = None

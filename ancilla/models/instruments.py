@@ -7,6 +7,7 @@ from enum import Enum
 
 class InstrumentType(Enum):
     """Enumeration of tradeable instrument types."""
+
     STOCK = "stock"
     CALL_OPTION = "call_option"
     PUT_OPTION = "put_option"
@@ -18,6 +19,7 @@ class InstrumentType(Enum):
 @dataclass
 class Instrument:
     """Base class for all tradeable instruments."""
+
     ticker: str
     instrument_type: InstrumentType
 
@@ -51,6 +53,7 @@ class Stock(Instrument):
 @dataclass
 class Option(Instrument):
     """Represents an option instrument."""
+
     strike: float
     expiration: datetime
     naked: bool = False
@@ -62,11 +65,13 @@ class Option(Instrument):
         expiration: datetime,
         option_type: Optional[str] = None,
         instrument_type: Optional[InstrumentType] = InstrumentType.CALL_OPTION,
-        naked: bool = False
+        naked: bool = False,
     ):
         if option_type:
             instrument_type = self._parse_option_type(option_type)
-        super().__init__(ticker=ticker, instrument_type=instrument_type or InstrumentType.CALL_OPTION)
+        super().__init__(
+            ticker=ticker, instrument_type=instrument_type or InstrumentType.CALL_OPTION
+        )
         self.strike = strike
         self.expiration = expiration
         self.naked = naked
@@ -75,9 +80,9 @@ class Option(Instrument):
     def _parse_option_type(option_type: str) -> InstrumentType:
         """Parse the option type string to InstrumentType enum."""
         option_type = option_type.lower()
-        if option_type == 'call':
+        if option_type == "call":
             return InstrumentType.CALL_OPTION
-        elif option_type == 'put':
+        elif option_type == "put":
             return InstrumentType.PUT_OPTION
         else:
             raise ValueError(f"Invalid option type: {option_type}")
@@ -88,48 +93,52 @@ class Option(Instrument):
 
         Example format: O:TSLA230113C00015000
         """
-        exp_str = self.expiration.strftime('%y%m%d')
+        exp_str = self.expiration.strftime("%y%m%d")
         strike_int = int(self.strike * 1000)  # Convert strike to integer points
-        strike_str = f"{strike_int:08d}"      # Zero-pad to 8 digits
-        opt_type = 'C' if self.instrument_type == InstrumentType.CALL_OPTION else 'P'
+        strike_str = f"{strike_int:08d}"  # Zero-pad to 8 digits
+        opt_type = "C" if self.instrument_type == InstrumentType.CALL_OPTION else "P"
         return f"O:{self.ticker}{exp_str}{opt_type}{strike_str}"
 
     @classmethod
-    def from_option_ticker(cls, option_ticker: str) -> 'Option':
+    def from_option_ticker(cls, option_ticker: str) -> "Option":
         """
         Create an Option instance from a formatted option ticker.
 
         Expected format: O:TSLA230113C00015000
         """
         try:
-            prefix, details = option_ticker.split(':')
-            if prefix != 'O':
+            prefix, details = option_ticker.split(":")
+            if prefix != "O":
                 raise ValueError("Option ticker must start with 'O:' prefix.")
 
             # Extract ticker by filtering out non-alphabetic characters
-            ticker = ''
+            ticker = ""
             i = 0
             while i < len(details) and details[i].isalpha():
                 ticker += details[i]
                 i += 1
 
             # Extract expiration date (next 6 characters after ticker)
-            date_str = details[i:i + 6]
+            date_str = details[i : i + 6]
             expiration = datetime.strptime(f"20{date_str}", "%Y%m%d")
 
             # Extract option type (1 character)
             option_type_char = details[i + 6]
-            option_type = InstrumentType.CALL_OPTION if option_type_char == 'C' else InstrumentType.PUT_OPTION
+            option_type = (
+                InstrumentType.CALL_OPTION
+                if option_type_char == "C"
+                else InstrumentType.PUT_OPTION
+            )
 
             # Extract strike price (remaining characters)
-            strike_str = details[i + 7:]
+            strike_str = details[i + 7 :]
             strike = float(strike_str) / 1000.0
 
             return cls(
                 ticker=ticker,
                 strike=strike,
                 expiration=expiration,
-                instrument_type=option_type
+                instrument_type=option_type,
             )
         except (ValueError, IndexError) as e:
             raise ValueError(f"Invalid option ticker format: {option_ticker}") from e

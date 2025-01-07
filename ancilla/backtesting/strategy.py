@@ -10,16 +10,19 @@ from ancilla.models import MarketData
 if TYPE_CHECKING:
     from ancilla.backtesting.engine import Backtest
 
+
 class Strategy:
     """Base class for implementing trading strategies."""
 
-    def __init__(self, data_provider: PolygonDataProvider, name: str = "Untitled Strategy"):
+    def __init__(
+        self, data_provider: PolygonDataProvider, name: str = "Untitled Strategy"
+    ):
         self.name = name
         self.data_provider = data_provider
-        self.portfolio: Portfolio;
-        self.engine: Backtest;
-        self.time: datetime;
-        self.market_data: Dict[str, Any];
+        self.portfolio: Portfolio
+        self.engine: Backtest
+        self.time: datetime
+        self.market_data: Dict[str, Any]
 
     def initialize(self, portfolio: Portfolio, engine: "Backtest") -> None:
         """Initialize the strategy with a portfolio."""

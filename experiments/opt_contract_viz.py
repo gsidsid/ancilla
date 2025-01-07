@@ -7,9 +7,12 @@ import os
 
 dotenv.load_dotenv()
 
+
 def main():
     # Initialize provider and visualizer
-    provider = PolygonDataProvider(api_key=os.getenv("POLYGON_API_KEY") or "your-api-key")
+    provider = PolygonDataProvider(
+        api_key=os.getenv("POLYGON_API_KEY") or "your-api-key"
+    )
     market = MarketVisualizer(provider)
 
     symbol = "AAPL"
@@ -26,7 +29,7 @@ def main():
         ticker=symbol,
         start_date=start_date,
         end_date=end_date,
-        indicators=['sma', 'bollinger', 'volume']
+        indicators=["sma", "bollinger", "volume"],
     )
     if fig_tech is not None:
         figs.append(fig_tech)
@@ -34,6 +37,7 @@ def main():
     # Show all figures
     for fig in figs:
         fig.show()
+
 
 if __name__ == "__main__":
     main()

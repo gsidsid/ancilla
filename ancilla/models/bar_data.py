@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+
 @dataclass
 class BarData:
     """
@@ -18,6 +19,7 @@ class BarData:
         vwap: Volume-weighted average price (optional)
         trades: Number of trades (optional)
     """
+
     timestamp: datetime
     open: float
     high: float

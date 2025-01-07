@@ -1,3 +1,3 @@
 from .market import MarketVisualizer
 
-__all__ = ['MarketVisualizer']
+__all__ = ["MarketVisualizer"]

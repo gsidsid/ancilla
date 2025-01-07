@@ -11,6 +11,7 @@ from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
+
 class OptionExpirationTestStrategy(Strategy):
     """
     Test strategy that focuses on option expiration behavior:
@@ -24,8 +25,8 @@ class OptionExpirationTestStrategy(Strategy):
         self,
         data_provider,
         position_size: float = 0.3,
-        test_scenarios: list = ['ITM', 'ATM', 'OTM'],
-        trading_hours: tuple = (10, 15)
+        test_scenarios: list = ["ITM", "ATM", "OTM"],
+        trading_hours: tuple = (10, 15),
     ):
         super().__init__(data_provider, name="expiration_test")
         self.position_size = position_size
@@ -38,8 +39,10 @@ class OptionExpirationTestStrategy(Strategy):
     def _has_pending_expiration(self, timestamp: datetime) -> bool:
         """Check if we have any positions expiring today."""
         for position in self.portfolio.positions.values():
-            if (isinstance(position.instrument, Option) and
-                position.instrument.expiration.date() == timestamp.date()):
+            if (
+                isinstance(position.instrument, Option)
+                and position.instrument.expiration.date() == timestamp.date()
+            ):
                 return True
         return False
 
@@ -54,26 +57,31 @@ class OptionExpirationTestStrategy(Strategy):
         # First check existing positions for expiration
         for ticker in list(self.active_calls.keys()):
             if ticker in market_data_snapshot:
-                self._check_expiration(ticker, market_data_snapshot[ticker]['close'], timestamp)
+                self._check_expiration(
+                    ticker, market_data_snapshot[ticker]["close"], timestamp
+                )
 
         # Only establish new positions if:
         # 1. No pending expirations today
         # 2. Haven't tested all scenarios
-        if (not self._has_pending_expiration(timestamp) and
-            len(self.scenario_status) < len(self.test_scenarios)):
+        if not self._has_pending_expiration(timestamp) and len(
+            self.scenario_status
+        ) < len(self.test_scenarios):
 
             # Then establish new test positions if needed
             for ticker, data in market_data_snapshot.items():
                 if len(ticker) > 5:  # Skip option tickers
                     continue
 
-                current_price = data['close']
+                current_price = data["close"]
 
                 # Enter new position if we don't have one
                 if ticker not in self.stock_positions:
                     self._establish_test_position(ticker, current_price, timestamp)
 
-    def _establish_test_position(self, ticker: str, price: float, timestamp: datetime) -> None:
+    def _establish_test_position(
+        self, ticker: str, price: float, timestamp: datetime
+    ) -> None:
         """Establish a new test position with specific strike selection based on test scenario."""
         # Calculate position size
         portfolio_value = self.portfolio.get_total_value()
@@ -87,12 +95,11 @@ class OptionExpirationTestStrategy(Strategy):
         current_scenario = self.test_scenarios[len(self.scenario_status)]
 
         # Buy stock position
-        self.logger.info(f"Buying {shares} shares of {ticker} @ ${price:.2f} for {current_scenario} test")
-        stock = Stock(ticker)
-        success = self.engine.buy_stock(
-            ticker=ticker,
-            quantity=shares
+        self.logger.info(
+            f"Buying {shares} shares of {ticker} @ ${price:.2f} for {current_scenario} test"
         )
+        stock = Stock(ticker)
+        success = self.engine.buy_stock(ticker=ticker, quantity=shares)
 
         if not success:
             return
@@ -101,9 +108,9 @@ class OptionExpirationTestStrategy(Strategy):
 
         # Select strike based on test scenario
         strike_multiplier = {
-            'ITM': 0.95,  # 5% in-the-money
-            'ATM': 1.00,  # at-the-money
-            'OTM': 1.05   # 5% out-of-the-money
+            "ITM": 0.95,  # 5% in-the-money
+            "ATM": 1.00,  # at-the-money
+            "OTM": 1.05,  # 5% out-of-the-money
         }
 
         target_strike = price * strike_multiplier[current_scenario]
@@ -114,21 +121,20 @@ class OptionExpirationTestStrategy(Strategy):
             as_of=timestamp,
             strike_range=(target_strike * 0.98, target_strike * 1.02),
             max_expiration_days=30,
-            contract_type='call'
+            contract_type="call",
         )
 
         if not available_calls:
             return
 
         # Select call closest to target strike
-        selected_call = min(available_calls, key=lambda x: abs(x.strike - target_strike))
+        selected_call = min(
+            available_calls, key=lambda x: abs(x.strike - target_strike)
+        )
 
         # Write call
         contracts = shares // 100
-        success = self.engine.sell_option(
-            option=selected_call,
-            quantity=contracts
-        )
+        success = self.engine.sell_option(option=selected_call, quantity=contracts)
 
         if success:
             self.active_calls[ticker] = selected_call
@@ -138,7 +144,9 @@ class OptionExpirationTestStrategy(Strategy):
                 f"expiring {selected_call.expiration.date()}"
             )
 
-    def _check_expiration(self, ticker: str, current_price: float, timestamp: datetime) -> None:
+    def _check_expiration(
+        self, ticker: str, current_price: float, timestamp: datetime
+    ) -> None:
         """Monitor and log position behavior around expiration."""
         call = self.active_calls[ticker]
         scenario = self.scenario_status[ticker]
@@ -177,6 +185,7 @@ class OptionExpirationTestStrategy(Strategy):
             self.active_calls.pop(ticker)
             self.stock_positions.pop(ticker, None)
 
+
 def test_option_expiration():
     """Run backtest with the option expiration test strategy."""
     api_key = os.getenv("POLYGON_API_KEY")
@@ -189,7 +198,7 @@ def test_option_expiration():
     strategy = OptionExpirationTestStrategy(
         data_provider=data_provider,
         position_size=0.3,
-        test_scenarios=['ITM', 'ATM', 'OTM']
+        test_scenarios=["ITM", "ATM", "OTM"],
     )
 
     # Set up test parameters
@@ -206,17 +215,11 @@ def test_option_expiration():
         end_date=end_date,
         tickers=tickers,
         commission_config=CommissionConfig(
-            min_commission=1.0,
-            per_share=0.005,
-            per_contract=0.65,
-            percentage=0.0001
+            min_commission=1.0, per_share=0.005, per_contract=0.65, percentage=0.0001
         ),
         slippage_config=SlippageConfig(
-            base_points=1.0,
-            vol_impact=0.1,
-            spread_factor=0.5,
-            market_impact=0.1
-        )
+            base_points=1.0, vol_impact=0.1, spread_factor=0.5, market_impact=0.1
+        ),
     )
 
     # Run backtest
@@ -226,6 +229,7 @@ def test_option_expiration():
     results.plot(include_drawdown=True)
 
     return results
+
 
 if __name__ == "__main__":
     results = test_option_expiration()

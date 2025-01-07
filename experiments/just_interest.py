@@ -11,6 +11,7 @@ from ancilla.providers import PolygonDataProvider
 
 dotenv.load_dotenv()
 
+
 class SimpleTestStrategy(Strategy):
     """Simple test strategy that buys and holds stocks."""
 
@@ -33,22 +34,20 @@ class SimpleTestStrategy(Strategy):
             # Calculate position size based on portfolio value
             portfolio_value = self.portfolio.get_total_value()
             position_value = portfolio_value * self.position_size
-            shares = int(position_value / data['close'])
+            shares = int(position_value / data["close"])
 
             if shares > 0:
                 # Open position
                 self.logger.info(
                     f"Opening position in {ticker}: {shares} shares @ ${data['close']:.2f}"
                 )
-                success = self.engine.buy_stock(
-                    ticker=ticker,
-                    quantity=shares
-                )
+                success = self.engine.buy_stock(ticker=ticker, quantity=shares)
                 if success:
-                    self.entry_prices[ticker] = data['close']
+                    self.entry_prices[ticker] = data["close"]
                     self.logger.info(f"Successfully opened position in {ticker}")
                 else:
                     self.logger.warning(f"Failed to open position in {ticker}")
+
 
 def test_backtest():
     """Run a simple backtest to verify the engine works."""
@@ -62,8 +61,7 @@ def test_backtest():
 
     # Create strategy
     strategy = SimpleTestStrategy(
-        data_provider=data_provider,
-        position_size=0.5  # 50% of portfolio per position
+        data_provider=data_provider, position_size=0.5  # 50% of portfolio per position
     )
 
     # Set up test parameters
@@ -80,17 +78,11 @@ def test_backtest():
         end_date=end_date,
         tickers=tickers,
         commission_config=CommissionConfig(
-            min_commission=1.0,
-            per_share=0.005,
-            per_contract=0.65,
-            percentage=0.0001
+            min_commission=1.0, per_share=0.005, per_contract=0.65, percentage=0.0001
         ),
         slippage_config=SlippageConfig(
-            base_points=1.0,
-            vol_impact=0.1,
-            spread_factor=0.5,
-            market_impact=0.05
-        )
+            base_points=1.0, vol_impact=0.1, spread_factor=0.5, market_impact=0.05
+        ),
     )
 
     # Run backtest
@@ -100,6 +92,7 @@ def test_backtest():
     results.plot(include_drawdown=True)
 
     return results
+
 
 if __name__ == "__main__":
     results = test_backtest()
