@@ -36,6 +36,10 @@ class BacktestResults:
     transaction_costs: Dict[str, float]
     execution_metrics: Dict[str, Any]
 
+    # Payouts
+    total_interest: float
+    total_dividends: float
+
     # Time series
     equity_curve: pd.DataFrame
     drawdown_series: pd.Series
@@ -596,7 +600,7 @@ class BacktestResults:
         total_invested = sum([
             t.quantity * t.entry_price * t.instrument.get_multiplier()
             for t in self.trades if t.quantity > 0])
-        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested
+        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested if total_invested != 0 else 0
 
         # Calculate options performance metrics
         if options_trades:
@@ -762,7 +766,7 @@ class BacktestResults:
         total_invested = sum([
             t.quantity * t.entry_price * t.instrument.get_multiplier()
             for t in self.trades if t.quantity > 0])
-        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested
+        return_on_invested_capital = sum([t.pnl for t in self.trades]) / total_invested if total_invested != 0 else 0
 
         # Calculate options metrics if applicable
         options_metrics = {}
@@ -794,6 +798,9 @@ class BacktestResults:
             ['Total Trades', str(len(self.trades))],
             ['Win Rate', f"{self.win_rate:.1%}"],
             ['Avg Duration', f"{np.mean([t.duration_hours for t in self.trades]):.1f}h"],
+            ['',''],
+            ['Interest', f"+ ${self.total_interest:,.2f}"],
+            ['Dividends', f"+ ${self.total_dividends:,.2f}"],
         ]
 
         # Add options metrics if present
@@ -841,11 +848,15 @@ class BacktestResults:
         # Calculate net opening cash flows
         net_opening_cash_flows = sum(engine.portfolio.opening_cash_flows)
 
+        # Calculate total dividend and interest payouts
+        total_dividend_payouts = sum(engine.dividend_payouts)
+        total_interest_payouts = sum(engine.interest_payouts)
+
         # Calculate realized P&L
         realized_pnl = sum(t.pnl for t in engine.portfolio.trades)  # Already includes commissions
 
         # Realized P&L already includes transaction costs
-        expected_final_capital = engine.initial_capital + realized_pnl
+        expected_final_capital = engine.initial_capital + realized_pnl + total_dividend_payouts + total_interest_payouts
         actual_final_capital = engine.portfolio.cash + engine.portfolio.get_position_value()
 
         # Compare with actual final capital
@@ -899,7 +910,9 @@ class BacktestResults:
             },
             'equity_curve': equity_df,
             'daily_returns': daily_returns,
-            'trade_count': len(engine.portfolio.trades)
+            'trade_count': len(engine.portfolio.trades),
+            'total_interest': total_interest_payouts,
+            'total_dividends': total_dividend_payouts,
         }
 
         results.update(risk_metrics)
@@ -922,5 +935,7 @@ class BacktestResults:
             drawdown_series=results['drawdown_series'],
             daily_returns=results['daily_returns'],
             net_pnl=results['net_pnl'],
-            trades=engine.portfolio.trades
+            trades=engine.portfolio.trades,
+            total_interest=results['total_interest'],
+            total_dividends=results['total_dividends']
         )

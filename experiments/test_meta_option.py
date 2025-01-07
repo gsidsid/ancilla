@@ -165,7 +165,6 @@ def run_meta_backtest():
 
     # Initialize backtest engine
     engine = Backtest(
-        data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
         start_date=start_date,

@@ -4,55 +4,64 @@ from typing import List, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import pytz
+import dotenv
+import os
 import logging
 
 from ancilla.utils.logging import BacktesterLogger
-from ancilla.providers.polygon import PolygonDataProvider
-from ancilla.models import Instrument, Option, Stock, InstrumentType, MarketData, MarketDataDict
+from ancilla.providers import PolygonDataProvider, FREDDataProvider
+from ancilla.models import Instrument, Option, Stock, InstrumentType, MarketDataDict
 from ancilla.backtesting.configuration import (
     Broker, CommissionConfig, SlippageConfig
 )
 
 if TYPE_CHECKING:
-    from ancilla.backtesting import Strategy, Portfolio, BacktestResults
+    from ancilla.backtesting import Strategy, BacktestResults
 
+dotenv.load_dotenv()
 
 class Backtest:
     """Backtesting engine."""
 
     def __init__(
         self,
-        data_provider: PolygonDataProvider,
         strategy: "Strategy",
-        initial_capital: float,
-        start_date: datetime,
-        end_date: datetime,
-        tickers: List[str],\
-        frequency: str = "30min", # realistically 30min or 1hour
+        initial_capital: float = 100000.0,
+        start_date: datetime = datetime.now() - timedelta(days=365),
+        end_date: datetime = datetime.now(),
+        tickers: List[str] = ["SPY"],
+        frequency: str = "30min", # realistically either 30min or 1hour
         enable_naked_options: bool = True,
-        risk_free_rate: float = 0.05,
         commission_config: Optional[CommissionConfig] = None,
         slippage_config: Optional[SlippageConfig] = None,
         deterministic_fill: bool = False,
-        name: str = "backtesting",
-        market_data = {}
+        name: str = "backtesting"
     ):
         from ancilla.backtesting import Portfolio
 
         name = f"{strategy.name}_orders"
         self.portfolio = Portfolio(name, initial_capital, enable_naked_options)
         self.initial_capital = initial_capital
-        self.data_provider = data_provider
+        self.data_provider = PolygonDataProvider(api_key=os.getenv("POLYGON_API_KEY") or "your-polygon-io-api-key")
         self.strategy = strategy
         self.frequency = frequency
-        self.risk_free_rate = risk_free_rate
+
+        fred_provider = FREDDataProvider(api_key=os.getenv("FRED_API_KEY") or "your-fred-api-key")
+        self.risk_free_rates = fred_provider.get_fed_funds_rate(
+            start_date=start_date - timedelta(days=1),
+            end_date=end_date + timedelta(days=1)
+        )
+
+        self.risk_free_rate = 0.0
+        rate_index = pd.Timestamp(start_date.replace(day=1, tzinfo=None).date())
+        if self.risk_free_rates is not None and not self.risk_free_rates.empty:
+            self.risk_free_rate = self.risk_free_rates[rate_index]
+
         self.logger = BacktesterLogger().get_logger()
 
         # Set timezone to Eastern Time
-        start_date = start_date.astimezone(pytz.timezone("US/Eastern"))
-        end_date = end_date.astimezone(pytz.timezone("US/Eastern"))
-        start_date = start_date.replace(hour=9, minute=30, second=0, microsecond=0)
-        end_date = end_date.replace(hour=16, minute=0, second=0, microsecond=0)
+        start_date = start_date.astimezone(pytz.timezone("US/Eastern")).replace(hour=9, minute=30, second=0, microsecond=0)
+        end_date = end_date.astimezone(pytz.timezone("US/Eastern")).replace(hour=16, minute=0, second=0, microsecond=0)
 
         self.start_date = start_date
         self.end_date = end_date
@@ -61,7 +70,7 @@ class Backtest:
         self.dividend_data = self._fetch_dividend_data()
 
         # Initialize market data
-        self.market_data = market_data
+        self.market_data = {}
         self.last_timestamp = start_date
 
         # Initialize market simulator
@@ -75,6 +84,10 @@ class Backtest:
         self.slippage_costs = []  # Track slippage
         self.commission_costs = []  # Track commissions
         self.total_transaction_costs = [] # Track total transaction costs for reconciliation
+
+        # Payout analytics
+        self.dividend_payouts = []  # Track dividend payouts
+        self.interest_payouts = []  # Track interest payouts
 
         # Initialize strategy
         self.strategy.initialize(self.portfolio, self)
@@ -242,6 +255,7 @@ class Backtest:
 
                 while current_time <= market_close:
                     self.last_timestamp = current_time
+                    self._update_risk_free_rate(current_time)
 
                     # Find current bars in weekly pull for each ticker
                     for ticker in self.tickers:
@@ -275,7 +289,7 @@ class Backtest:
                     market_data_with_indicators = MarketDataDict(
                         self.market_data,
                         self.market_history,
-                        risk_free_rate=self.risk_free_rate
+                        risk_free_rate=float(self.risk_free_rate / 100.0)
                     )
                     self.strategy.on_data(current_time, market_data_with_indicators)
                     for ticker in self.market_data:
@@ -300,6 +314,11 @@ class Backtest:
                 last_market_close = market_close
                 self._process_option_expiration(
                     current_date, market_close.astimezone(pytz.timezone('US/Eastern')))
+
+                # If the current day is the last day of the month, payout monthly interest
+                if current_date.day == current_date.replace(day=1).replace(tzinfo=None).date().day:
+                    interest_payout = self.portfolio.payout_interest(float(self.risk_free_rate / 100.0))
+                    self.interest_payouts.append(interest_payout)
 
                 current_date += timedelta(days=1)
 
@@ -681,6 +700,22 @@ class Backtest:
                 data['low'] += dividend_amount
                 data['close'] += dividend_amount
 
+                dividend_payout = self.portfolio.payout_dividend(
+                    dividend_ticker=ticker,
+                    cash_amount = dividend_amount,
+                )
+                self.dividend_payouts.append(dividend_payout)
                 self.logger.debug(
                     f"Adjusted {ticker} prices for ${dividend_amount:.2f} dividend on {current_date}"
                 )
+
+    def _update_risk_free_rate(self, current_time: datetime):
+        """
+        Update the interest rate for the current date.
+        """
+        rate_index = pd.Timestamp(current_time.replace(day=1, tzinfo=None).date())
+        try:
+            if self.risk_free_rates is not None:
+                self.risk_free_rate = self.risk_free_rates[rate_index]
+        except KeyError:
+            self.logger.warning(f"No rate data found for {rate_index} – using last known rate, {self.risk_free_rate}%")

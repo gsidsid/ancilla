@@ -12,9 +12,9 @@ def main():
     provider = PolygonDataProvider(api_key=os.getenv("POLYGON_API_KEY") or "your-api-key")
     market = MarketVisualizer(provider)
 
-    symbol = "O:META240223C00385000"
-    end_date = datetime(2024, 2, 20)
-    start_date = datetime(2024, 2, 1)
+    symbol = "AAPL"
+    end_date = datetime(2024, 11, 25)
+    start_date = end_date - timedelta(days=5)
 
     print(f"Running analysis for {symbol}...")
 

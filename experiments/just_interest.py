@@ -63,18 +63,19 @@ def test_backtest():
     # Create strategy
     strategy = SimpleTestStrategy(
         data_provider=data_provider,
-        position_size=0.2  # 20% of portfolio per position
+        position_size=0.5  # 50% of portfolio per position
     )
 
     # Set up test parameters
-    tickers = ["AAPL", "MSFT"]  # Reduced ticker list for testing
-    start_date = datetime(2024, 11, 1, tzinfo=pytz.UTC)
-    end_date = datetime(2024, 12, 30, tzinfo=pytz.UTC)  # Shorter test period
+    tickers = []  # Reduced ticker list for testing
+    start_date = datetime(2020, 1, 1, tzinfo=pytz.UTC)
+    end_date = datetime(2024, 8, 31, tzinfo=pytz.UTC)  # Shorter test period
 
     # Initialize backtest engine
     simple_backtest = Backtest(
         strategy=strategy,
         initial_capital=100000,
+        frequency="1hour",
         start_date=start_date,
         end_date=end_date,
         tickers=tickers,
@@ -88,7 +89,7 @@ def test_backtest():
             base_points=1.0,
             vol_impact=0.1,
             spread_factor=0.5,
-            market_impact=0.1
+            market_impact=0.05
         )
     )
 

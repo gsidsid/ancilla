@@ -200,7 +200,6 @@ def test_option_expiration():
 
     # Initialize backtest engine
     option_expiry_backtest = Backtest(
-        data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
         start_date=start_date,

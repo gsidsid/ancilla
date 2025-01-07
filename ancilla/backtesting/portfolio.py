@@ -390,6 +390,23 @@ class Portfolio:
             self.logger.get_logger().error(f"Failed to close option position {ticker} after exercise.")
             return False
 
+    def payout_interest(self, interest_rate: float) -> float:
+        """Calculate monthly interest on uninvested cash using federal funds rate."""
+        monthly_payout = self.cash * interest_rate / 12
+        self.cash += monthly_payout
+        return monthly_payout
+
+    def payout_dividend(self, dividend_ticker: str, cash_amount: float) -> float:
+        """Payout dividends to the portfolio by crediting cash per held share."""
+        dividend_payout = 0.0
+        if dividend_ticker in self.positions:
+            position = self.positions[dividend_ticker]
+            if position.quantity > 0:
+                dividend_payout = cash_amount * position.quantity
+                self.cash += dividend_payout
+                self.logger.get_logger().info(f"Dividend payout for holding {dividend_ticker}. Total paid ${dividend_payout:.2f}")
+        return dividend_payout
+
     def get_position_value(self, market_prices: Optional[Dict[str, float]] = None) -> float:
         """Get the total value of all open positions."""
         total_value = 0

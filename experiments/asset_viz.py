@@ -13,8 +13,8 @@ def main():
     market = MarketVisualizer(provider)
 
     symbol = "AAPL"
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=180)
+    end_date = datetime(2024, 11, 25)
+    start_date = end_date - timedelta(days=5)
 
     print(f"Running combined analysis for {symbol}...")
 

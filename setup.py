@@ -10,7 +10,7 @@ setup(
         "numpy>=1.22.0",
         "pytz",
         "scipy>=1.9.0",
-        "bt>=1.1.0"
+        "fredapi>=0.5.2"
     ],
     extras_require={
         "dev": [

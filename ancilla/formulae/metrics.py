@@ -139,7 +139,7 @@ def calculate_trade_metrics(
     total_invested = sum([
         abs(t.quantity) * t.entry_price * t.instrument.get_multiplier()
         for t in trades])
-    return_on_invested_capital = sum([t.pnl for t in trades]) / total_invested
+    return_on_invested_capital = sum([t.pnl for t in trades]) / total_invested if total_invested != 0 else 0
     wins = [pnl for pnl in trade_pnls if pnl > 0]
     losses = [pnl for pnl in trade_pnls if pnl <= 0]
     holding_periods = [(t.exit_time - t.entry_time).days for t in trades]

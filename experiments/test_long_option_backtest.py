@@ -167,7 +167,6 @@ def test_long_option_strategy():
 
     # Initialize backtest engine
     long_option_backtest = Backtest(
-        data_provider=data_provider,
         strategy=strategy,
         initial_capital=initial_capital,
         start_date=start_date,
