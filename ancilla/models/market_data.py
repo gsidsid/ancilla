@@ -1,4 +1,4 @@
-# ancilla/models/bar_data.py
+# ancilla/models/market_data.py
 
 from dataclasses import dataclass
 from datetime import datetime

@@ -294,6 +294,10 @@ def calculate_implied_volatility(option_price: float, underlying_price: float, s
     Returns:
         Implied volatility as a decimal or None if the calculation fails to converge
     """
+    # Avoid division by zero, imaginary values
+    time_to_expiry = max(time_to_expiry, 1e-10)
+    strike_price = max(strike_price, 0.01)
+
     def black_scholes(sigma):
         d1 = (np.log(underlying_price / strike_price) +
               (risk_free_rate + 0.5 * sigma ** 2) * time_to_expiry) / (sigma * np.sqrt(time_to_expiry))

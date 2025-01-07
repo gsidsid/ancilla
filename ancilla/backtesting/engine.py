@@ -30,6 +30,7 @@ class Backtest:
         tickers: List[str],\
         frequency: str = "30min", # realistically 30min or 1hour
         enable_naked_options: bool = True,
+        risk_free_rate: float = 0.05,
         commission_config: Optional[CommissionConfig] = None,
         slippage_config: Optional[SlippageConfig] = None,
         deterministic_fill: bool = False,
@@ -38,13 +39,13 @@ class Backtest:
     ):
         from ancilla.backtesting import Portfolio
 
+        name = f"{strategy.name}_orders"
+        self.portfolio = Portfolio(name, initial_capital, enable_naked_options)
         self.initial_capital = initial_capital
         self.data_provider = data_provider
         self.strategy = strategy
-        # Generate portfolio name from strategy name and timestamp
-        name = f"{strategy.name}_orders"
-        self.portfolio = Portfolio(name, initial_capital, enable_naked_options)
         self.frequency = frequency
+        self.risk_free_rate = risk_free_rate
 
         # Set timezone to Eastern Time
         start_date = start_date.astimezone(pytz.timezone("US/Eastern"))
@@ -271,7 +272,7 @@ class Backtest:
                     market_data_with_indicators = MarketDataDict(
                         self.market_data,
                         self.market_history,
-                        risk_free_rate=0.05
+                        risk_free_rate=self.risk_free_rate
                     )
                     self.strategy.on_data(current_time, market_data_with_indicators)
                     for ticker in self.market_data:

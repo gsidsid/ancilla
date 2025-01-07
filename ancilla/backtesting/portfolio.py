@@ -158,7 +158,8 @@ class Portfolio:
             quantity = position_quantity
 
         # Ensure the close quantity does not exceed the position quantity
-        # TODO: This could theoretically imply opening a new position with the difference?
+        # TODO: Should abs(quantity) > abs(position_quantity) imply opening a new position?
+        # I think it's better to force positions to be addressed independently
         if abs(quantity) > abs(position_quantity):
             self.logger.get_logger().warning(
                 f"Attempting to close {quantity} of {ticker}, but only {position_quantity} is available."

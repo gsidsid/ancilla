@@ -32,6 +32,8 @@ class Strategy:
         """
         Process market data and execute strategy logic.
 
+        See ancilla/models/market_data.py for MarketData schema.
+
         Args:
             timestamp: Current timestamp
             market_data: Dictionary of market data by ticker

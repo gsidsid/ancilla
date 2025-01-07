@@ -872,6 +872,73 @@ class PolygonDataProvider:
             'market_close': market_close_utc
         }
 
+    def get_dividends(
+        self,
+        ticker: str,
+        start_date: Union[str, datetime, date],
+        end_date: Optional[Union[str, datetime, date]] = None
+    ) -> Optional[pd.DataFrame]:
+        """Get dividend data with caching."""
+        try:
+            # Check cache first
+            cache_params = {
+                'ticker': ticker,
+                'start_date': start_date,
+                'end_date': end_date
+            }
+            cached_data = self._get_cached_data('dividends', **cache_params)
+            if cached_data is not None:
+                return pd.DataFrame(cached_data)
+
+            start_date, end_date = self._validate_date_range(start_date, end_date)
+
+            dividends = self._retry_with_backoff(
+                self.client.list_dividends,
+                ticker,
+                start_date,
+                end_date
+            )
+
+            if not dividends:
+                return None
+
+            # Process the data
+            div_data = []
+            for div in dividends:
+                try:
+                    div_data.append({
+                        'ex_date': pd.to_datetime(div.ex_date),
+                        'payment_date': pd.to_datetime(div.payment_date),
+                        'record_date': pd.to_datetime(div.record_date),
+                        'amount': float(div.amount),
+                        'flag': div.flag
+                    })
+                except Exception as e:
+                    self.logger.warning(f"Error processing dividend: {str(e)}")
+                    continue
+
+            if not div_data:
+                return None
+
+            # Convert to DataFrame
+            df = pd.DataFrame(div_data)
+            df.set_index('ex_date', inplace=True)
+            df.sort_index(inplace=True)
+
+            # Cache the result
+            self._cache_data(df.to_dict(), 'dividends', **cache_params)
+
+            return df
+
+        except Exception as e:
+            self.logger.error(f"Error fetching dividends for {ticker}: {str(e)}")
+            self.logger.error(f"Request: {locals().get('cache_params', 'Not available')}")
+            return None
+
+    ##############################
+    # VALIDATION/CACHING HELPERS
+    ##############################
+
     def clean_timeseries(
         self,
         df: pd.DataFrame,
