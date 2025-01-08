@@ -1,12 +1,16 @@
-## Ancilla
+# Ancilla
 A Polygon.io and FRED-based financial data library for backtesting trading strategies.
 
----
+<p>
+    <a href="https://pypi.python.org/pypi/ancilla" alt="PyPI">
+        <img src="https://img.shields.io/pypi/v/ancilla.svg" /></a>
+    <a href="https://github.com/gsidsid/ancilla" alt="License">
+        <img src="https://img.shields.io/github/license/gsidsid/ancilla" /></a>
+</p>
 
 Ancilla is a straightforward Python library for querying/visualizing financial data and executing backtests to survey trading strategies. Under the hood, Ancilla uses Polygon.io to fetch historical stock and options data, and FRED, the official data source for the Federal Reserve, to fetch interest rates.
 
-
-### Installation
+## Installation
 
 ```
 pip install ancilla
@@ -20,7 +24,7 @@ FRED_API_KEY=your_api_key
 
 Using Ancilla requires paid Polygon.io data subscriptions, which can be obtained [here](https://polygon.io/), and a free FRED API key, which can be obtained [here](https://fred.stlouisfed.org/).
 
-### Usage
+## Usage
 
 ```python
 # experiments/test_backtest.py
@@ -115,7 +119,7 @@ if __name__ == "__main__":
     results.plot(include_drawdown=True)
 ```
 
-### Features
+## Features
 
 - A Polygon.io data wrapper with retries & automatic caching
 - Basic visualizations for IV surfaces, liquidity, and price data
