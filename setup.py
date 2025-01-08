@@ -11,6 +11,7 @@ setup(
         "pytz",
         "scipy>=1.9.0",
         "fredapi>=0.5.2",
+        "plotly>=5.24.1"
     ],
     extras_require={
         "dev": [
