@@ -47,7 +47,7 @@ class PolygonDataProvider:
 
         # Rate limiting
         self.last_request_time = 0
-        self.min_request_interval = 0.025  # 25ms between requests
+        self.min_request_interval = 0.025
 
     def get_current_price(self, ticker: str) -> Optional[MarketSnapshot]:
         """Get current price snapshot with short-term caching."""

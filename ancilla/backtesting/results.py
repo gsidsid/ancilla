@@ -1,6 +1,6 @@
 # ancilla/backtesting/results.py
 from dataclasses import dataclass
-from typing import Dict, List, Union, Any, Optional
+from typing import Dict, List, Union, Any
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
