@@ -12,7 +12,7 @@ from ancilla.providers import PolygonDataProvider
 dotenv.load_dotenv()
 
 
-class MetaLongCallStrategy(Strategy):
+class RollingLongCallStrategy(Strategy):
     """
     Simple Long Call Option Strategy for META that:
     1. Buys ATM calls with 30-day duration
@@ -28,7 +28,7 @@ class MetaLongCallStrategy(Strategy):
         exit_dte_threshold: int = 5,
         strike_flex_pct: float = 0.02,
     ):
-        super().__init__(data_provider, name="meta_long_call")
+        super().__init__(data_provider, name="rolling_long_call")
         self.position_size = position_size
         self.target_days_to_expiry = target_days_to_expiry
         self.exit_dte_threshold = exit_dte_threshold
@@ -145,8 +145,7 @@ class MetaLongCallStrategy(Strategy):
                     self.logger.warning("Failed to sell META calls")
 
 
-def run_meta_backtest():
-    """Run backtest with the META long call strategy."""
+if __name__ == "__main__":
     api_key = os.getenv("POLYGON_API_KEY")
     if not api_key:
         raise ValueError("POLYGON_API_KEY environment variable not set")
@@ -154,7 +153,7 @@ def run_meta_backtest():
     data_provider = PolygonDataProvider(api_key)
 
     # Create strategy instance
-    strategy = MetaLongCallStrategy(
+    strategy = RollingLongCallStrategy(
         data_provider=data_provider,
         position_size=0.1,  # 10% of portfolio per position
         target_days_to_expiry=30,  # Target 30 DTE options
@@ -187,9 +186,3 @@ def run_meta_backtest():
 
     # Plot results
     results.plot(include_drawdown=True)
-
-    return results
-
-
-if __name__ == "__main__":
-    results = run_meta_backtest()

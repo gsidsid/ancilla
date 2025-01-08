@@ -20,5 +20,3 @@ Currently featuring:
 
 Requires *Polygon.io* starter subscriptions for data access.
 Requires a *FRED* API key for interest rates.
-
-![Lightning Mcqueen](cars/lightningmcqueen.jpeg)

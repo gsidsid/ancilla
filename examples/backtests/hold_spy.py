@@ -12,11 +12,11 @@ from ancilla.providers import PolygonDataProvider
 dotenv.load_dotenv()
 
 
-class SimpleTestStrategy(Strategy):
-    """Simple test strategy that buys and holds stocks."""
+class HoldSpyStrategy(Strategy):
+    """Simple test strategy that buys and holds SPY."""
 
     def __init__(self, data_provider, position_size: float = 0.2):
-        super().__init__(data_provider, name="simpletest")
+        super().__init__(data_provider, name="hold_spy")
         self.position_size = position_size
         self.entry_prices = {}  # Track entry prices for each ticker
 
@@ -49,9 +49,7 @@ class SimpleTestStrategy(Strategy):
                     self.logger.warning(f"Failed to open position in {ticker}")
 
 
-def test_backtest():
-    """Run a simple backtest to verify the engine works."""
-
+if __name__ == "__main__":
     # Initialize data provider
     api_key = os.getenv("POLYGON_API_KEY")
     if not api_key:
@@ -60,14 +58,14 @@ def test_backtest():
     data_provider = PolygonDataProvider(api_key)
 
     # Create strategy
-    strategy = SimpleTestStrategy(
+    strategy = HoldSpyStrategy(
         data_provider=data_provider, position_size=0.5  # 50% of portfolio per position
     )
 
     # Set up test parameters
     tickers = ["SPY"]  # Reduced ticker list for testing
-    start_date = datetime(2022, 1, 1, tzinfo=pytz.UTC)
-    end_date = datetime(2024, 8, 31, tzinfo=pytz.UTC)  # Shorter test period
+    start_date = datetime(2023, 1, 1, tzinfo=pytz.UTC)
+    end_date = datetime(2024, 12, 31, tzinfo=pytz.UTC)  # Shorter test period
 
     # Initialize backtest engine
     simple_backtest = Backtest(
@@ -90,9 +88,3 @@ def test_backtest():
 
     # Plot results
     results.plot(include_drawdown=True)
-
-    return results
-
-
-if __name__ == "__main__":
-    results = test_backtest()

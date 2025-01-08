@@ -28,7 +28,7 @@ class OptionExpirationTestStrategy(Strategy):
         test_scenarios: list = ["ITM", "ATM", "OTM"],
         trading_hours: tuple = (10, 15),
     ):
-        super().__init__(data_provider, name="expiration_test")
+        super().__init__(data_provider, name="option_expiration")
         self.position_size = position_size
         self.test_scenarios = test_scenarios
         self.trading_hours = trading_hours
@@ -186,8 +186,7 @@ class OptionExpirationTestStrategy(Strategy):
             self.stock_positions.pop(ticker, None)
 
 
-def test_option_expiration():
-    """Run backtest with the option expiration test strategy."""
+if __name__ == "__main__":
     api_key = os.getenv("POLYGON_API_KEY")
     if not api_key:
         raise ValueError("POLYGON_API_KEY environment variable not set")
@@ -227,9 +226,3 @@ def test_option_expiration():
 
     # Plot results
     results.plot(include_drawdown=True)
-
-    return results
-
-
-if __name__ == "__main__":
-    results = test_option_expiration()
